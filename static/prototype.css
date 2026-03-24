@@ -350,6 +350,19 @@ section {
   box-shadow: inset 0 0 0 1px var(--marker-border);
 }
 
+.hl-annotation-muted {
+  color: var(--muted);
+  opacity: 0.65;
+}
+
+.annotation-preview-marker {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--marker-border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
 .hl-diff-add {
   color: var(--ok);
   background: rgba(46, 160, 67, 0.12);

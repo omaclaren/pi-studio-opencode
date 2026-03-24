@@ -44,6 +44,15 @@
                 <span id="historyCountBadge" class="source-badge">History: 0/0</span>
               </div>
               <div class="source-actions-row">
+                <button id="insertHeaderBtn" type="button">Insert annotated reply header</button>
+                <select id="annotationModeSelect" aria-label="Annotation visibility mode">
+                  <option value="on" selected>Annotations: On</option>
+                  <option value="off">Annotations: Hidden</option>
+                </select>
+                <button id="stripAnnotationsBtn" type="button">Strip annotations...</button>
+                <button id="saveAnnotatedBtn" type="button">Save .annotated.md</button>
+              </div>
+              <div class="source-actions-row">
                 <select id="highlightSelect" aria-label="Editor syntax highlighting">
                   <option value="on" selected>Syntax highlight: On</option>
                   <option value="off">Syntax highlight: Off</option>

@@ -12,6 +12,7 @@ const state = {
   workingDir: "",
   editorHighlightEnabled: true,
   editorLanguage: "markdown",
+  annotationsEnabled: true,
   editorHighlightRenderRaf: null,
   lastLoadedIntoEditorNormalized: "",
   transientStatus: null,
@@ -33,6 +34,7 @@ let mathJaxPromise = null;
 const EDITOR_HIGHLIGHT_MAX_CHARS = 100_000;
 const EDITOR_HIGHLIGHT_STORAGE_KEY = "studioPrototype.editorHighlightEnabled";
 const EDITOR_LANGUAGE_STORAGE_KEY = "studioPrototype.editorLanguage";
+const ANNOTATION_MODE_STORAGE_KEY = "studioPrototype.annotationsEnabled";
 const EMPTY_OVERLAY_LINE = "\u200b";
 const ANNOTATION_MARKER_REGEX = /\[an:\s*([^\]]+?)\]/gi;
 const LANG_EXT_MAP = {
@@ -82,6 +84,10 @@ const elements = {
   composerStatusBadge: document.getElementById("composerStatusBadge"),
   backendStatusBadge: document.getElementById("backendStatusBadge"),
   historyCountBadge: document.getElementById("historyCountBadge"),
+  insertHeaderBtn: document.getElementById("insertHeaderBtn"),
+  annotationModeSelect: document.getElementById("annotationModeSelect"),
+  stripAnnotationsBtn: document.getElementById("stripAnnotationsBtn"),
+  saveAnnotatedBtn: document.getElementById("saveAnnotatedBtn"),
   highlightSelect: document.getElementById("highlightSelect"),
   langSelect: document.getElementById("langSelect"),
   sourceHighlight: document.getElementById("sourceHighlight"),
@@ -310,7 +316,7 @@ function highlightInlineAnnotations(text) {
     if (start > lastIndex) {
       out += escapeHtml(source.slice(lastIndex, start));
     }
-    out += wrapHighlight("hl-annotation", token);
+    out += wrapHighlight(state.annotationsEnabled ? "hl-annotation" : "hl-annotation-muted", token);
     lastIndex = start + token.length;
     if (token.length === 0) ANNOTATION_MARKER_REGEX.lastIndex += 1;
   }
@@ -624,6 +630,18 @@ function setEditorLanguage(lang) {
   }
 }
 
+function setAnnotationsEnabled(enabled) {
+  state.annotationsEnabled = Boolean(enabled);
+  persistStoredToggle(ANNOTATION_MODE_STORAGE_KEY, state.annotationsEnabled);
+  if (elements.annotationModeSelect) {
+    elements.annotationModeSelect.value = state.annotationsEnabled ? "on" : "off";
+  }
+  if (state.editorHighlightEnabled) {
+    scheduleEditorHighlightRender();
+  }
+  state.currentRenderedPreviewKey = "";
+}
+
 function buildPlainMarkdownHtml(markdown) {
   return `<pre class="plain-markdown">${escapeHtml(String(markdown || ""))}</pre>`;
 }
@@ -649,6 +667,61 @@ function sanitizeRenderedHtml(html, markdown) {
   }
 
   return buildPreviewErrorHtml("Preview sanitizer unavailable. Showing plain markdown.", markdown);
+}
+
+function applyAnnotationMarkersToElement(targetEl, mode) {
+  if (!targetEl || mode === "none") return;
+  if (typeof document.createTreeWalker !== "function") return;
+
+  const walker = document.createTreeWalker(targetEl, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let node = walker.nextNode();
+  while (node) {
+    const textNode = node;
+    const value = typeof textNode.nodeValue === "string" ? textNode.nodeValue : "";
+    if (value && value.toLowerCase().includes("[an:")) {
+      const parent = textNode.parentElement;
+      const tag = parent && parent.tagName ? parent.tagName.toUpperCase() : "";
+      if (!["CODE", "PRE", "SCRIPT", "STYLE", "TEXTAREA"].includes(tag)) {
+        textNodes.push(textNode);
+      }
+    }
+    node = walker.nextNode();
+  }
+
+  for (const textNode of textNodes) {
+    const text = typeof textNode.nodeValue === "string" ? textNode.nodeValue : "";
+    if (!text) continue;
+    ANNOTATION_MARKER_REGEX.lastIndex = 0;
+    if (!ANNOTATION_MARKER_REGEX.test(text)) continue;
+    ANNOTATION_MARKER_REGEX.lastIndex = 0;
+
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    let match;
+    while ((match = ANNOTATION_MARKER_REGEX.exec(text)) !== null) {
+      const token = match[0] || "";
+      const start = typeof match.index === "number" ? match.index : 0;
+      if (start > lastIndex) {
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex, start)));
+      }
+      if (mode === "highlight") {
+        const markerEl = document.createElement("span");
+        markerEl.className = "annotation-preview-marker";
+        markerEl.textContent = typeof match[1] === "string" ? match[1].trim() : token;
+        markerEl.title = token;
+        fragment.appendChild(markerEl);
+      }
+      lastIndex = start + token.length;
+      if (token.length === 0) ANNOTATION_MARKER_REGEX.lastIndex += 1;
+    }
+    if (lastIndex < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+    if (textNode.parentNode) {
+      textNode.parentNode.replaceChild(fragment, textNode);
+    }
+  }
 }
 
 function appendMathFallbackNotice(targetEl, message) {
@@ -874,8 +947,26 @@ async function renderMarkdownWithPandoc(markdown) {
   return payload.html;
 }
 
+function hasAnnotationMarkers(text) {
+  const source = String(text || "");
+  ANNOTATION_MARKER_REGEX.lastIndex = 0;
+  const hasMarker = ANNOTATION_MARKER_REGEX.test(source);
+  ANNOTATION_MARKER_REGEX.lastIndex = 0;
+  return hasMarker;
+}
+
+function stripAnnotationMarkers(text) {
+  return String(text || "").replace(ANNOTATION_MARKER_REGEX, "");
+}
+
+function prepareEditorTextForSend(text) {
+  const raw = String(text || "");
+  return state.annotationsEnabled ? raw : stripAnnotationMarkers(raw);
+}
+
 function prepareEditorTextForPreview(text) {
-  return String(text || "");
+  const raw = String(text || "");
+  return state.annotationsEnabled ? raw : stripAnnotationMarkers(raw);
 }
 
 function beginPreviewRender(targetEl) {
@@ -966,11 +1057,12 @@ function getPreviewSource() {
   const responseId = display.kind === "history"
     ? display.item?.localPromptId || "none"
     : (display.kind === "active" ? display.turn?.localPromptId || "active" : "none");
+  const previewMarkdown = state.annotationsEnabled ? display.markdown : stripAnnotationMarkers(display.markdown);
   return {
     mode: "preview",
-    markdown: display.markdown,
+    markdown: previewMarkdown,
     emptyMessage: display.text,
-    key: `preview\u0000${display.kind}\u0000${responseId}\u0000${display.markdown}\u0000${display.previewWarning || ""}`,
+    key: `preview\u0000${display.kind}\u0000${responseId}\u0000${previewMarkdown}\u0000${display.previewWarning || ""}`,
     referenceLabel: getResponseReferenceLabel(display),
     previewWarning: display.previewWarning || "",
   };
@@ -1036,6 +1128,7 @@ async function renderResponsePreviewNow() {
     if (nonce !== state.responsePreviewRenderNonce || state.rightView !== source.mode) return;
     finishPreviewRender(elements.responseView);
     setResponseViewHtml(sanitizeRenderedHtml(renderedHtml, source.markdown));
+    applyAnnotationMarkersToElement(elements.responseView, state.annotationsEnabled ? "highlight" : "hide");
     await renderMathFallbackInElement(elements.responseView);
     if (source.previewWarning) {
       appendPreviewWarning(elements.responseView, source.previewWarning);
@@ -1426,6 +1519,12 @@ function renderEditorMeta() {
   elements.historyCountBadge.textContent = `History: ${history.length && selectedIndex >= 0 ? selectedIndex + 1 : 0}/${history.length}`;
   elements.syncBadge.hidden = !inSync;
   elements.syncBadge.classList.toggle("sync", inSync);
+  if (elements.annotationModeSelect) {
+    elements.annotationModeSelect.value = state.annotationsEnabled ? "on" : "off";
+    elements.annotationModeSelect.title = state.annotationsEnabled
+      ? "Annotations On: keep and send [an: ...] markers."
+      : "Annotations Hidden: keep markers in editor, hide in preview, and strip before Run / Queue steering.";
+  }
   if (elements.highlightSelect) {
     elements.highlightSelect.value = state.editorHighlightEnabled ? "on" : "off";
   }
@@ -1435,6 +1534,13 @@ function renderEditorMeta() {
   if (elements.sourceHighlight) {
     elements.sourceHighlight.hidden = !state.editorHighlightEnabled;
   }
+  if (elements.stripAnnotationsBtn) {
+    elements.stripAnnotationsBtn.disabled = state.busy || !hasAnnotationMarkers(elements.promptInput.value);
+  }
+  if (elements.saveAnnotatedBtn) {
+    elements.saveAnnotatedBtn.disabled = state.busy || !normalizedText(elements.promptInput.value);
+  }
+  updateAnnotatedReplyHeaderButton();
   elements.promptInput.classList.toggle("highlight-active", state.editorHighlightEnabled);
 }
 
@@ -1569,6 +1675,10 @@ function updateActionState() {
   if (elements.saveBtn) elements.saveBtn.disabled = state.busy || !hasPrompt || !state.sourcePath;
   if (elements.loadFileBtn) elements.loadFileBtn.disabled = state.busy;
   if (elements.resourceDirBtn) elements.resourceDirBtn.disabled = state.busy || Boolean(state.sourcePath);
+  if (elements.insertHeaderBtn) elements.insertHeaderBtn.disabled = state.busy;
+  if (elements.annotationModeSelect) elements.annotationModeSelect.disabled = state.busy;
+  if (elements.stripAnnotationsBtn) elements.stripAnnotationsBtn.disabled = state.busy || !hasAnnotationMarkers(elements.promptInput.value);
+  if (elements.saveAnnotatedBtn) elements.saveAnnotatedBtn.disabled = state.busy || !hasPrompt;
   if (elements.highlightSelect) elements.highlightSelect.disabled = state.busy;
   if (elements.langSelect) elements.langSelect.disabled = state.busy;
 
@@ -1660,6 +1770,69 @@ function setEditorText(text, originLabel, options = {}) {
   render();
 }
 
+function describeSourceForAnnotation() {
+  if (state.sourcePath) {
+    return `file ${state.sourcePath.split(/[\\/]/).pop() || state.sourcePath}`;
+  }
+  if (/response/i.test(state.editorOriginLabel)) {
+    return "last model response";
+  }
+  return state.editorOriginLabel || "studio editor";
+}
+
+function buildAnnotationHeader() {
+  let header = "annotated reply below:\n";
+  header += `original source: ${describeSourceForAnnotation()}\n`;
+  header += "user annotation syntax: [an: note]\n";
+  header += "precedence: later messages supersede these annotations unless user explicitly references them\n\n---\n\n";
+  return header;
+}
+
+function stripAnnotationBoundaryMarker(text) {
+  return String(text || "").replace(/\n{0,2}--- end annotations ---\s*$/i, "");
+}
+
+function stripAnnotationHeader(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  if (!normalized.toLowerCase().startsWith("annotated reply below:")) {
+    return { hadHeader: false, body: normalized };
+  }
+  const dividerIndex = normalized.indexOf("\n---");
+  if (dividerIndex < 0) {
+    return { hadHeader: false, body: normalized };
+  }
+  let cursor = dividerIndex + 4;
+  while (cursor < normalized.length && normalized[cursor] === "\n") {
+    cursor += 1;
+  }
+  return {
+    hadHeader: true,
+    body: stripAnnotationBoundaryMarker(normalized.slice(cursor)),
+  };
+}
+
+function buildAnnotatedSaveSuggestion() {
+  const effectivePath = state.sourcePath || "";
+  if (effectivePath) {
+    const parts = String(effectivePath).split(/[\\/]/);
+    const fileName = parts.pop() || "draft.md";
+    const dir = parts.length > 0 ? parts.join("/") + "/" : "";
+    const stem = fileName.replace(/\.[^.]+$/, "") || "draft";
+    return dir + stem + ".annotated.md";
+  }
+  const baseName = `draft.annotated.md`;
+  if (state.workingDir) {
+    return state.workingDir.replace(/\/$/, "") + "/" + baseName;
+  }
+  return "./" + baseName;
+}
+
+function updateAnnotatedReplyHeaderButton() {
+  if (!elements.insertHeaderBtn) return;
+  const hasHeader = stripAnnotationHeader(elements.promptInput.value).hadHeader;
+  elements.insertHeaderBtn.textContent = hasHeader ? "Remove annotated reply header" : "Insert annotated reply header";
+}
+
 function buildSuggestedSavePath() {
   if (state.sourcePath) return state.sourcePath;
   const ext = preferredExtensionForLanguage(state.editorLanguage);
@@ -1721,6 +1894,48 @@ async function saveEditor() {
   }
 }
 
+function toggleAnnotatedReplyHeader() {
+  const stripped = stripAnnotationHeader(elements.promptInput.value);
+  if (stripped.hadHeader) {
+    setEditorText(stripped.body, state.editorOriginLabel, { sourcePath: state.sourcePath, workingDir: state.workingDir, language: state.editorLanguage });
+    setTransientStatus("Removed annotated reply header.", "success");
+    return;
+  }
+  const cleanedBody = stripAnnotationBoundaryMarker(stripped.body);
+  const updated = buildAnnotationHeader() + cleanedBody + "\n\n--- end annotations ---\n\n";
+  setEditorText(updated, state.editorOriginLabel, { sourcePath: state.sourcePath, workingDir: state.workingDir, language: state.editorLanguage });
+  setTransientStatus("Inserted annotated reply header.", "success");
+}
+
+function stripAllAnnotations() {
+  const content = elements.promptInput.value;
+  if (!hasAnnotationMarkers(content)) {
+    setTransientStatus("No [an: ...] markers found in editor.", "warning");
+    return;
+  }
+  const confirmed = window.confirm("Remove all [an: ...] markers from editor text? This cannot be undone.");
+  if (!confirmed) return;
+  const stripped = stripAnnotationMarkers(content);
+  setEditorText(stripped, state.editorOriginLabel, { sourcePath: state.sourcePath, workingDir: state.workingDir, language: state.editorLanguage });
+  setTransientStatus("Removed annotation markers from editor text.", "success");
+}
+
+async function saveAnnotatedCopy() {
+  const content = elements.promptInput.value;
+  if (!normalizedText(content)) {
+    setTransientStatus("Editor is empty. Nothing to save.", "warning");
+    return;
+  }
+  const path = window.prompt("Save annotated editor content as:", buildAnnotatedSaveSuggestion());
+  if (!path) return;
+  try {
+    const data = await postJson("/api/file/save", { path, content, baseDir: state.workingDir || undefined });
+    setTransientStatus(`Saved annotated editor text to ${data.label || data.path || path}.`, "success");
+  } catch (error) {
+    setTransientStatus(error instanceof Error ? error.message : String(error), "error");
+  }
+}
+
 function chooseWorkingDir() {
   if (state.sourcePath) {
     setTransientStatus("Working dir is only needed for non-file-backed editor content.", "warning");
@@ -1753,7 +1968,7 @@ async function runOrStop() {
     return;
   }
 
-  const prompt = normalizedText(elements.promptInput.value);
+  const prompt = normalizedText(prepareEditorTextForSend(elements.promptInput.value));
   if (!prompt) {
     setTransientStatus("Add editor text before running.", "warning");
     return;
@@ -1768,7 +1983,7 @@ async function runOrStop() {
 }
 
 async function queueSteering() {
-  const prompt = normalizedText(elements.promptInput.value);
+  const prompt = normalizedText(prepareEditorTextForSend(elements.promptInput.value));
   if (!prompt) {
     setTransientStatus("Add editor text before queueing steering.", "warning");
     return;
@@ -1938,6 +2153,21 @@ function wireEvents() {
   if (elements.resourceDirLabel) {
     elements.resourceDirLabel.addEventListener("click", () => chooseWorkingDir());
   }
+  if (elements.insertHeaderBtn) {
+    elements.insertHeaderBtn.addEventListener("click", () => toggleAnnotatedReplyHeader());
+  }
+  if (elements.annotationModeSelect) {
+    elements.annotationModeSelect.addEventListener("change", () => {
+      setAnnotationsEnabled(elements.annotationModeSelect.value !== "off");
+      render();
+    });
+  }
+  if (elements.stripAnnotationsBtn) {
+    elements.stripAnnotationsBtn.addEventListener("click", () => stripAllAnnotations());
+  }
+  if (elements.saveAnnotatedBtn) {
+    elements.saveAnnotatedBtn.addEventListener("click", () => void saveAnnotatedCopy());
+  }
   elements.refreshBtn.addEventListener("click", () => {
     void fetchSnapshot().then(() => {
       setTransientStatus("Refreshed snapshot.", "success", 1200);
@@ -1993,6 +2223,7 @@ function wireEvents() {
 async function main() {
   populateLanguageOptions();
   setEditorLanguage(readStoredEditorLanguage() || state.editorLanguage);
+  setAnnotationsEnabled(readStoredToggle(ANNOTATION_MODE_STORAGE_KEY) ?? true);
   setEditorHighlightEnabled(readStoredToggle(EDITOR_HIGHLIGHT_STORAGE_KEY) ?? true);
   wireEvents();
   await fetchSnapshot();
