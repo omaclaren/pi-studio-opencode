@@ -1,16 +1,15 @@
 # pi-studio-opencode
 
-Standalone opencode-facing implementation of π Studio, built to keep Studio behavior as host-neutral as practical while letting the opencode layer stay clean and testable.
+`pi-studio-opencode` is an experimental opencode plugin implementation of π Studio, modelled on the original `pi-studio` extension for Pi. It aims to keep Studio behaviour as host-neutral as practical while using opencode as the first standalone host.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the current design philosophy and longer-term extraction plan.
+Current prototype support includes:
 
-This revision adds explicit local prompt provenance so the spike can distinguish:
+- a Studio-like two-pane editor/response workspace
+- run / queue steering / stop / history flows
+- response and editor preview with math fallback
+- file load/save, working-dir-based preview resolution, and editor syntax highlighting
 
-- a fresh run
-- queued steering on an active run chain
-- a second queued steer on the same chain
-- a brand new run after the session has already gone idle
-- an aborted run
+Full parity with `pi-studio` is still in progress.
 
 ## Install
 
