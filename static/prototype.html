@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>π Studio · opencode</title>
+    <link rel="stylesheet" href="/static/prototype.css" />
+  </head>
+  <body>
+    <header>
+      <h1><span class="app-logo" aria-hidden="true">π</span> Studio <span class="app-subtitle">opencode</span></h1>
+      <div class="controls">
+        <button id="saveAsBtn" type="button">Save editor as...</button>
+        <button id="saveBtn" type="button">Save editor</button>
+        <button id="loadFileBtn" type="button">Load file content</button>
+        <button id="refreshBtn" type="button">Refresh</button>
+        <button id="diagnosticsBtn" type="button">Diagnostics</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="leftPane">
+        <div class="section-header">
+          <div class="section-header-main">Editor (Raw)</div>
+        </div>
+        <div class="source-wrap">
+          <div class="source-meta">
+            <div class="badge-row">
+              <span id="sourceBadge" class="source-badge">Editor origin: studio editor</span>
+              <button id="resourceDirBtn" type="button" class="resource-dir-btn">Set working dir</button>
+              <span id="resourceDirLabel" class="source-badge resource-dir-label" hidden></span>
+              <span id="syncBadge" class="source-badge sync-badge" hidden>In sync with response</span>
+              <span id="queueBadge" class="source-badge">Queue: 0</span>
+            </div>
+            <div class="source-actions">
+              <div class="source-actions-row">
+                <button id="runBtn" type="button">Run editor text</button>
+                <button id="queueBtn" type="button" disabled>Queue steering</button>
+                <button id="copyDraftBtn" type="button">Copy editor text</button>
+              </div>
+              <div class="source-actions-row">
+                <span id="composerStatusBadge" class="source-badge">Run state: idle</span>
+                <span id="backendStatusBadge" class="source-badge">Backend: -</span>
+                <span id="historyCountBadge" class="source-badge">History: 0/0</span>
+              </div>
+              <div class="source-actions-row">
+                <select id="highlightSelect" aria-label="Editor syntax highlighting">
+                  <option value="on" selected>Syntax highlight: On</option>
+                  <option value="off">Syntax highlight: Off</option>
+                </select>
+                <select id="langSelect" aria-label="Highlight language"></select>
+              </div>
+            </div>
+          </div>
+          <div class="editor-highlight-wrap">
+            <pre id="sourceHighlight" class="editor-highlight" aria-hidden="true"></pre>
+            <textarea id="promptInput" spellcheck="false" placeholder="Paste or edit text here."></textarea>
+          </div>
+        </div>
+      </section>
+
+      <section id="rightPane">
+        <div class="section-header">
+          <div class="section-header-main">
+            <select id="rightViewSelect" aria-label="Response view mode">
+              <option value="markdown">Response (Raw)</option>
+              <option value="preview" selected>Response (Preview)</option>
+              <option value="editor-preview">Editor (Preview)</option>
+            </select>
+          </div>
+        </div>
+        <div class="reference-meta">
+          <span id="referenceBadge" class="source-badge">Latest response: none</span>
+        </div>
+        <div id="responseView" class="panel-scroll rendered-markdown">
+          <pre id="responseText" class="plain-markdown">No response yet.</pre>
+        </div>
+        <div class="response-wrap">
+          <div class="response-actions">
+            <div class="response-actions-row history-row">
+              <select id="followSelect" aria-label="Auto-update response">
+                <option value="on" selected>Auto-update response: On</option>
+                <option value="off">Auto-update response: Off</option>
+              </select>
+              <button id="historyPrevBtn" type="button" title="Show previous response in history.">◀ Prev response</button>
+              <span id="historyIndexBadge" class="source-badge">History: 0/0</span>
+              <button id="historyNextBtn" type="button" title="Show next response in history.">Next response ▶</button>
+              <button id="historyLastBtn" type="button" title="Jump to the latest loaded response in history.">Last response ▶|</button>
+            </div>
+            <div class="response-actions-row">
+              <button id="loadResponseBtn" type="button">Load response into editor</button>
+              <button id="loadHistoryPromptBtn" type="button">Load response prompt into editor</button>
+              <button id="copyResponseBtn" type="button">Copy response text</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <section id="diagnosticsPanel" class="diagnostics-panel" hidden>
+      <div class="diagnostics-grid">
+        <section class="diagnostic-card">
+          <div class="section-header diagnostics-header">
+            <div class="section-header-main">Active turn</div>
+          </div>
+          <div id="activeTurnPanel" class="panel-scroll diagnostics-body empty-state">No active turn yet.</div>
+        </section>
+
+        <section class="diagnostic-card">
+          <div class="section-header diagnostics-header">
+            <div class="section-header-main">Last completed turn</div>
+          </div>
+          <div id="lastTurnPanel" class="panel-scroll diagnostics-body empty-state">No completed turn yet.</div>
+        </section>
+
+        <section class="diagnostic-card">
+          <div class="section-header diagnostics-header">
+            <div class="section-header-main">Selected response provenance</div>
+          </div>
+          <div id="selectionPanel" class="panel-scroll diagnostics-body empty-state">No response selected yet.</div>
+        </section>
+
+        <section class="diagnostic-card diagnostic-wide">
+          <div class="section-header diagnostics-header">
+            <div class="section-header-main">History by chain</div>
+          </div>
+          <div id="historyList" class="panel-scroll diagnostics-body history-list"></div>
+        </section>
+
+        <section class="diagnostic-card diagnostic-wide">
+          <div class="section-header diagnostics-header">
+            <div class="section-header-main">Recent host events</div>
+            <div class="section-header-actions">
+              <span id="logSummary" class="source-badge">0 lines</span>
+            </div>
+          </div>
+          <pre id="logOutput" class="log-output diagnostics-body"></pre>
+        </section>
+      </div>
+    </section>
+
+    <footer>
+      <span id="statusLine"><span id="statusSpinner" aria-hidden="true"> </span><span id="status">Connecting · Studio script starting…</span></span>
+      <span id="footerMeta" class="footer-meta"><span id="footerMetaText" class="footer-meta-text">History: 0/0 · Queue: 0</span></span>
+      <span class="shortcut-hint">Cmd/Ctrl+Enter: run / queue steering · Esc: stop</span>
+    </footer>
+
+    <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
+    <script type="module" src="/static/prototype.js"></script>
+  </body>
+</html>

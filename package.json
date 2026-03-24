@@ -1,0 +1,22 @@
+{
+  "name": "pi-studio-opencode",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/**/*.test.ts",
+    "smoke": "tsx src/main.ts --multi-steer-test --new-run-after-idle-test --abort-test",
+    "host-demo": "tsx src/demo-host.ts",
+    "pi-host-demo": "tsx src/demo-host-pi.ts",
+    "prototype": "tsx src/prototype-server.ts"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.2.27"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
