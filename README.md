@@ -153,7 +153,9 @@ Optional launcher flags can be forwarded after the command, for example:
 Notes:
 
 - `--base-url`, `--session`, and `--directory` are intentionally taken from the **current active opencode session** and user-supplied overrides are ignored.
-- the browser UI now shows linked project/session information in the footer/tooltip.
+- for the current interactive TUI flow, opencode needs an exposed local server (for example `opencode --port 4096`) so the browser Studio can attach back to the same live session.
+- if you launch with `--no-open`, open the **full tokenized URL** printed by the launcher / child log, not just the bare port root.
+- the browser UI now shows linked project/session information in the footer/tooltip and follows the current opencode light/dark/system theme choice.
 - the current implementation keeps the Studio browser surface external; it does **not** try to embed Studio inside opencode.
 
 ## Optional flags

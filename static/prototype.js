@@ -1,4 +1,8 @@
 const BRAILLE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const BOOT_CONFIG = typeof window !== "undefined" && window.__PI_STUDIO_OPENCODE_BOOT__ && typeof window.__PI_STUDIO_OPENCODE_BOOT__ === "object"
+  ? window.__PI_STUDIO_OPENCODE_BOOT__
+  : {};
+const STUDIO_ACCESS_TOKEN = typeof BOOT_CONFIG.token === "string" ? BOOT_CONFIG.token : "";
 
 const state = {
   snapshot: null,
@@ -124,8 +128,29 @@ const elements = {
   statusLine: document.getElementById("statusLine"),
   statusSpinner: document.getElementById("statusSpinner"),
   status: document.getElementById("status"),
+  footerMeta: document.getElementById("footerMeta"),
   footerMetaText: document.getElementById("footerMetaText"),
 };
+
+function getStudioThemeInfo() {
+  return BOOT_CONFIG && typeof BOOT_CONFIG.theme === "object" && BOOT_CONFIG.theme ? BOOT_CONFIG.theme : null;
+}
+
+function buildAuthenticatedPath(path) {
+  const url = new URL(path, window.location.origin);
+  if (STUDIO_ACCESS_TOKEN) {
+    url.searchParams.set("token", STUDIO_ACCESS_TOKEN);
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+function buildAuthenticatedHeaders(init = undefined) {
+  const headers = new Headers(init || {});
+  if (STUDIO_ACCESS_TOKEN) {
+    headers.set("X-PI-STUDIO-TOKEN", STUDIO_ACCESS_TOKEN);
+  }
+  return headers;
+}
 
 function normalizedText(value) {
   return String(value || "").replace(/\r\n/g, "\n").trim();
@@ -229,6 +254,34 @@ function formatProjectLabel(snapshot) {
   const normalized = directory.replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : normalized;
+}
+
+function getHistoryPromptButtonLabel(item) {
+  if (!item) return "Load response prompt into editor";
+  if (item.promptMode === "steer") return "Load effective prompt into editor";
+  if (item.promptMode === "run") return "Load run prompt into editor";
+  return "Load response prompt into editor";
+}
+
+function getHistoryPromptLoadedStatus(item) {
+  if (!item) return "Prompt unavailable for the selected response.";
+  if (item.promptMode === "steer") return "Loaded effective prompt into editor.";
+  if (item.promptMode === "run") return "Loaded run prompt into editor.";
+  return "Loaded response prompt into editor.";
+}
+
+function getHistoryPromptSourceStateLabel(item) {
+  if (!item) return "response prompt";
+  if (item.promptMode === "steer") return "effective prompt";
+  if (item.promptMode === "run") return "run prompt";
+  return "response prompt";
+}
+
+function getHistoryItemTitle(item) {
+  if (!item) return "Response";
+  if (item.promptMode === "run") return "Run";
+  if (item.promptMode === "steer") return `Steer ${item.promptSteeringCount}`;
+  return "Response";
 }
 
 function readStoredToggle(storageKey) {
@@ -1118,11 +1171,11 @@ async function renderMarkdownWithPandoc(markdown) {
 
   let response;
   try {
-    response = await fetch("/api/render-preview", {
+    response = await fetch(buildAuthenticatedPath("/api/render-preview"), {
       method: "POST",
-      headers: {
+      headers: buildAuthenticatedHeaders({
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify({
         markdown: String(markdown || ""),
         sourcePath: state.sourcePath || "",
@@ -1628,7 +1681,7 @@ function renderHistoryDiagnostics() {
       topRow.className = "row";
 
       const itemTitle = document.createElement("strong");
-      itemTitle.textContent = item.promptMode === "run" ? "Run" : `Steer ${item.promptSteeringCount}`;
+      itemTitle.textContent = getHistoryItemTitle(item);
 
       const time = document.createElement("span");
       time.className = "meta";
@@ -1818,6 +1871,9 @@ function deriveStatus() {
     const suffix = elapsed !== "-" ? ` · ${elapsed}` : "";
     return { message: `Studio: ${action}…${suffix}`, level: "", spinning: true };
   }
+  if (snapshot.state.lastBackendStatus === "busy") {
+    return { message: "Session: running from the attached terminal…", level: "", spinning: true };
+  }
   return {
     message: "Ready · Edit, run, queue steering, or inspect response history.",
     level: "",
@@ -1886,6 +1942,11 @@ function renderFooterMeta() {
     if (sessionId) titleParts.push(`Session ID: ${sessionId}`);
     const baseUrl = String(state.snapshot?.launchContext?.baseUrl || "").trim();
     if (baseUrl) titleParts.push(`Opencode server: ${baseUrl}`);
+    const themeInfo = state.snapshot?.launchContext?.theme || getStudioThemeInfo();
+    const themeRaw = String(themeInfo?.raw || "").trim();
+    const themePreference = String(themeInfo?.preference || "").trim();
+    if (themeRaw) titleParts.push(`Theme: ${themeRaw}`);
+    else if (themePreference) titleParts.push(`Theme mode: ${themePreference}`);
     elements.footerMeta.title = titleParts.join("\n");
   }
 }
@@ -1927,13 +1988,11 @@ function updateActionState() {
   elements.loadResponseBtn.textContent = "Load response into editor";
   if (!selectedItem) {
     elements.loadHistoryPromptBtn.disabled = true;
-    elements.loadHistoryPromptBtn.textContent = "Load response prompt into editor";
-  } else if (selectedItem.promptMode === "steer") {
-    elements.loadHistoryPromptBtn.disabled = state.busy || !normalizedText(selectedItem.effectivePrompt);
-    elements.loadHistoryPromptBtn.textContent = "Load effective prompt into editor";
+    elements.loadHistoryPromptBtn.textContent = getHistoryPromptButtonLabel(null);
   } else {
-    elements.loadHistoryPromptBtn.disabled = state.busy || !normalizedText(selectedItem.promptText);
-    elements.loadHistoryPromptBtn.textContent = "Load run prompt into editor";
+    const promptSource = selectedItem.promptMode === "steer" ? selectedItem.effectivePrompt : selectedItem.promptText;
+    elements.loadHistoryPromptBtn.disabled = state.busy || !normalizedText(promptSource);
+    elements.loadHistoryPromptBtn.textContent = getHistoryPromptButtonLabel(selectedItem);
   }
 
   elements.copyResponseBtn.disabled = !displayedResponseText;
@@ -1957,9 +2016,14 @@ function render() {
 }
 
 async function fetchSnapshot() {
-  const response = await fetch("/api/snapshot");
+  const response = await fetch(buildAuthenticatedPath("/api/snapshot"), {
+    headers: buildAuthenticatedHeaders(),
+  });
   if (!response.ok) {
-    throw new Error(`Snapshot request failed with ${response.status}`);
+    const message = response.status === 403
+      ? "Studio access expired. Re-run /studio."
+      : `Snapshot request failed with ${response.status}`;
+    throw new Error(message);
   }
   state.snapshot = await response.json();
   render();
@@ -1969,9 +2033,9 @@ async function postJson(path, payload = {}) {
   state.busy = true;
   render();
   try {
-    const response = await fetch(path, {
+    const response = await fetch(buildAuthenticatedPath(path), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildAuthenticatedHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
     });
     const data = await response.json();
@@ -2347,13 +2411,13 @@ function loadSelectedPrompt() {
     setTransientStatus("Prompt unavailable for the selected response.", "warning");
     return;
   }
-  if (item.promptMode === "steer") {
-    setEditorText(item.effectivePrompt || item.promptText, "effective prompt", { sourcePath: null });
-    setTransientStatus("Loaded effective prompt into editor.", "success");
+  const promptSource = item.promptMode === "steer" ? (item.effectivePrompt || item.promptText) : item.promptText;
+  if (!normalizedText(promptSource)) {
+    setTransientStatus("Prompt unavailable for the selected response.", "warning");
     return;
   }
-  setEditorText(item.promptText, "run prompt", { sourcePath: null });
-  setTransientStatus("Loaded run prompt into editor.", "success");
+  setEditorText(promptSource, getHistoryPromptSourceStateLabel(item), { sourcePath: null });
+  setTransientStatus(getHistoryPromptLoadedStatus(item), "success");
 }
 
 async function copySelectedResponse() {

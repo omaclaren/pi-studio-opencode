@@ -71,13 +71,22 @@ type SessionMessageRecord = {
   parts: Part[];
 };
 
-type NormalizedMessage = {
+export type ObservedSessionMessage = {
   id: string;
   role: Message["role"];
   created: number;
   completed?: number;
   error?: string;
   text: string;
+};
+
+type NormalizedMessage = ObservedSessionMessage;
+
+export type ObservedExternalResponse = {
+  userMessageId: string | null;
+  promptText: string;
+  submittedAt: number;
+  response: ObservedSessionMessage;
 };
 
 type StartedServer = {
@@ -154,6 +163,39 @@ function extractAssistantPartText(part: Part): string | undefined {
     return part.text;
   }
   return undefined;
+}
+
+export function collectObservedExternalResponses(
+  messages: ReadonlyArray<ObservedSessionMessage>,
+  matchedAssistantIds: ReadonlySet<string>,
+): ObservedExternalResponse[] {
+  const ordered = [...messages].sort((a, b) => {
+    if (a.created !== b.created) return a.created - b.created;
+    if (a.role === b.role) return a.id.localeCompare(b.id);
+    return a.role === "user" ? -1 : 1;
+  });
+
+  const observed: ObservedExternalResponse[] = [];
+  let latestUser: ObservedSessionMessage | null = null;
+
+  for (const message of ordered) {
+    if (message.role === "user") {
+      latestUser = message;
+      continue;
+    }
+    if (message.role !== "assistant") continue;
+    if (matchedAssistantIds.has(message.id)) continue;
+    if (!message.text && !message.error) continue;
+
+    observed.push({
+      userMessageId: latestUser?.id ?? null,
+      promptText: latestUser?.text ?? "",
+      submittedAt: latestUser?.created ?? message.created,
+      response: message,
+    });
+  }
+
+  return observed;
 }
 
 function isMessagePartDeltaEvent(event: { type?: string; properties?: unknown }): event is {
@@ -455,7 +497,11 @@ export class OpencodeStudioHost implements StudioHost {
         return;
       }
 
+      const observed = await this.reconcileObservedExternalResponses();
       this.core.noteBackendIdle();
+      for (const item of observed) {
+        this.emitTelemetry({ type: "submission.completed", at: item.completedAt ?? Date.now(), historyItem: item });
+      }
       this.emitState();
     } finally {
       this.handlingIdle = false;
@@ -546,6 +592,36 @@ export class OpencodeStudioHost implements StudioHost {
     }
 
     return { userMessageId, response };
+  }
+
+  private async reconcileObservedExternalResponses(): Promise<StudioHostHistoryItem[]> {
+    const messages = (await this.fetchSessionMessages())
+      .map(normalizeMessage)
+      .filter((message) => !this.baselineMessageIds.has(message.id));
+
+    const observed = collectObservedExternalResponses(messages, this.matchedAssistantIds);
+    if (observed.length === 0) {
+      return [];
+    }
+
+    const adopted: StudioHostHistoryItem[] = [];
+    for (const item of observed) {
+      if (item.userMessageId) {
+        this.matchedUserIds.add(item.userMessageId);
+      }
+      this.matchedAssistantIds.add(item.response.id);
+      adopted.push(this.core.recordObservedResponse({
+        promptText: item.promptText,
+        userMessageId: item.userMessageId,
+        responseMessageId: item.response.id,
+        responseText: item.response.text,
+        responseError: item.response.error,
+        submittedAt: item.submittedAt,
+        completedAt: item.response.completed ?? item.response.created,
+      }));
+    }
+
+    return adopted;
   }
 
   private async fetchSessionMessages(): Promise<SessionMessageRecord[]> {

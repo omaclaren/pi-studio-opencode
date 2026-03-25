@@ -1,4 +1,4 @@
-export type StudioPromptMode = "run" | "steer";
+export type StudioPromptMode = "run" | "steer" | "response";
 export type StudioHostRunState = "idle" | "running" | "stopping" | "closed" | "error";
 export type StudioHostSteeringMode = "native-steer" | "adapter-queue" | "native-queue";
 

@@ -118,3 +118,27 @@ test("StudioCore stop request clears queued steers and returns idle after backen
   assert.equal(core.getHistory().length, 1);
   assert.equal(core.getHistory()[0]?.responseError, "Aborted");
 });
+
+test("StudioCore can record externally observed terminal responses", () => {
+  const core = new StudioCore({ backend: "test" });
+
+  const observed = core.recordObservedResponse({
+    promptText: "typed in terminal",
+    userMessageId: "user-ext-1",
+    responseMessageId: "assistant-ext-1",
+    responseText: "external response",
+    submittedAt: 300,
+    completedAt: 345,
+  });
+
+  assert.equal(observed.promptMode, "response");
+  assert.equal(observed.chainIndex, 1);
+  assert.equal(observed.promptText, "typed in terminal");
+  assert.equal(observed.effectivePrompt, "typed in terminal");
+  assert.equal(observed.userMessageId, "user-ext-1");
+  assert.equal(observed.responseMessageId, "assistant-ext-1");
+  assert.equal(observed.responseText, "external response");
+  assert.equal(observed.completedAt, 345);
+  assert.equal(core.getHistory().length, 1);
+  assert.equal(core.getState().runState, "idle");
+});

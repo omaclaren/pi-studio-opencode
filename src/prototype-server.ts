@@ -1,11 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createOpencodeStudioHost, type OpencodeStudioHostTelemetryEvent } from "./host-opencode.js";
+import { buildPrototypeThemeStylesheet, readPrototypeThemeDescriptor, type PrototypeThemeDescriptor } from "./prototype-theme.js";
 import type { StudioHostCapabilities, StudioHostHistoryItem, StudioHostState } from "./studio-host-types.js";
 
 export type PrototypeServerOptions = {
@@ -48,6 +50,13 @@ type PrototypeModelSnapshot = {
   at: number;
 };
 
+type PrototypeThemeSnapshot = {
+  raw: string | null;
+  preference: PrototypeThemeDescriptor["preference"];
+  source: PrototypeThemeDescriptor["source"];
+  family: string | null;
+};
+
 export type PrototypeSnapshot = {
   state: StudioHostState;
   capabilities: StudioHostCapabilities;
@@ -59,6 +68,7 @@ export type PrototypeSnapshot = {
   launchContext: {
     directory: string;
     baseUrl: string | null;
+    theme: PrototypeThemeSnapshot;
   };
   serverStartedAt: number;
   now: number;
@@ -66,6 +76,8 @@ export type PrototypeSnapshot = {
 
 export type PrototypeServerInstance = {
   url: string;
+  baseUrl: string;
+  token: string;
   host: string;
   port: number;
   getSnapshot(): PrototypeSnapshot;
@@ -76,6 +88,59 @@ export type PrototypeServerInstance = {
 const STATIC_DIR = resolve(fileURLToPath(new URL("../static", import.meta.url)));
 const MAX_LOG_LINES = 200;
 const REQUEST_BODY_MAX_BYTES = 1_000_000;
+const PROTOTYPE_TOKEN_HEADER = "x-pi-studio-token";
+
+function createPrototypeAccessToken(): string {
+  return randomUUID();
+}
+
+function buildPrototypeAccessUrl(host: string, port: number, token: string): string {
+  return `http://${host}:${port}/?token=${encodeURIComponent(token)}`;
+}
+
+function readPrototypeRequestToken(request: IncomingMessage, url: URL): string {
+  const headerValue = request.headers[PROTOTYPE_TOKEN_HEADER];
+  const headerToken = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (typeof headerToken === "string" && headerToken.trim()) {
+    return headerToken.trim();
+  }
+  return url.searchParams.get("token")?.trim() ?? "";
+}
+
+function hasValidPrototypeToken(request: IncomingMessage, url: URL, token: string): boolean {
+  return readPrototypeRequestToken(request, url) === token;
+}
+
+function respondInvalidPrototypeToken(response: ServerResponse): void {
+  sendJson(response, 403, { error: "Invalid or expired studio token. Re-run /studio." });
+}
+
+async function buildPrototypeHtml(theme: PrototypeThemeDescriptor, token: string): Promise<string> {
+  const templatePath = resolve(STATIC_DIR, "prototype.html");
+  const template = await readFile(templatePath, "utf8");
+  const bootJson = JSON.stringify({
+    token,
+    theme: {
+      raw: theme.raw,
+      preference: theme.preference,
+      source: theme.source,
+      family: theme.family,
+    },
+  }).replace(/</g, "\\u003c");
+  const themeStyles = buildPrototypeThemeStylesheet(theme);
+  const stylesheetHref = `/static/prototype.css?token=${encodeURIComponent(token)}`;
+  const scriptHref = `/static/prototype.js?token=${encodeURIComponent(token)}`;
+
+  return template
+    .replace(
+      '<link rel="stylesheet" href="/static/prototype.css" />',
+      `<link rel="stylesheet" href="${stylesheetHref}" />\n    <style id="pi-studio-opencode-theme">\n${themeStyles}\n    </style>\n    <script>window.__PI_STUDIO_OPENCODE_BOOT__ = ${bootJson};</script>`,
+    )
+    .replace(
+      '<script type="module" src="/static/prototype.js"></script>',
+      `<script type="module" src="${scriptHref}"></script>`,
+    );
+}
 
 function expandHome(input: string): string {
   if (!input) return input;
@@ -235,7 +300,7 @@ function contentTypeForPath(pathname: string): string {
 }
 
 async function serveStatic(response: ServerResponse, pathname: string): Promise<void> {
-  const relativePath = pathname === "/" ? "prototype.html" : pathname.replace(/^\/static\//, "");
+  const relativePath = pathname.replace(/^\/static\//, "");
   const filePath = resolve(STATIC_DIR, relativePath);
   if (!filePath.startsWith(STATIC_DIR)) {
     sendText(response, 403, "Forbidden");
@@ -683,6 +748,8 @@ async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?
 
 export async function startPrototypeServer(options: PrototypeServerOptions): Promise<PrototypeServerInstance> {
   const serverStartedAt = Date.now();
+  const accessToken = createPrototypeAccessToken();
+  const theme = await readPrototypeThemeDescriptor();
   const logLines: Array<{ at: number; line: string }> = [];
   let activeTurn: PrototypeTurnRecord | null = null;
   let lastCompletedTurn: PrototypeTurnRecord | null = null;
@@ -829,6 +896,12 @@ export async function startPrototypeServer(options: PrototypeServerOptions): Pro
       launchContext: {
         directory: options.directory,
         baseUrl: options.baseUrl ?? null,
+        theme: {
+          raw: theme.raw,
+          preference: theme.preference,
+          source: theme.source,
+          family: theme.family,
+        },
       },
       serverStartedAt,
       now: Date.now(),
@@ -839,9 +912,30 @@ export async function startPrototypeServer(options: PrototypeServerOptions): Pro
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? `${listenHost}:${listenPort}`}`);
 
     try {
-      if (request.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/static/"))) {
+      if (request.method === "GET" && url.pathname === "/") {
+        if (!hasValidPrototypeToken(request, url, accessToken)) {
+          respondInvalidPrototypeToken(response);
+          return;
+        }
+        response.setHeader("Cache-Control", "no-store");
+        sendText(response, 200, await buildPrototypeHtml(theme, accessToken), "text/html; charset=utf-8");
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname.startsWith("/static/")) {
+        if (!hasValidPrototypeToken(request, url, accessToken)) {
+          respondInvalidPrototypeToken(response);
+          return;
+        }
         await serveStatic(response, url.pathname);
         return;
+      }
+
+      if (url.pathname.startsWith("/api/")) {
+        if (!hasValidPrototypeToken(request, url, accessToken)) {
+          respondInvalidPrototypeToken(response);
+          return;
+        }
       }
 
       if (request.method === "GET" && url.pathname === "/api/snapshot") {
@@ -956,8 +1050,12 @@ export async function startPrototypeServer(options: PrototypeServerOptions): Pro
     listenHost = info.address;
   }
 
+  const baseUrl = `http://${listenHost}:${listenPort}`;
+
   return {
-    url: `http://${listenHost}:${listenPort}`,
+    url: buildPrototypeAccessUrl(listenHost, listenPort, accessToken),
+    baseUrl,
+    token: accessToken,
     host: listenHost,
     port: listenPort,
     getSnapshot: buildSnapshot,

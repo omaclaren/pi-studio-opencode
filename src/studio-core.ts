@@ -191,6 +191,48 @@ export class StudioCore {
     return historyItem;
   }
 
+  recordObservedResponse(input: {
+    promptText?: string | null;
+    userMessageId?: string | null;
+    responseMessageId?: string | null;
+    responseText?: string | null;
+    responseError?: string;
+    submittedAt?: number;
+    completedAt?: number;
+  }): StudioHostHistoryItem {
+    this.assertReady();
+
+    const promptText = typeof input.promptText === "string" ? input.promptText.trim() : "";
+    const submittedAt = typeof input.submittedAt === "number" && Number.isFinite(input.submittedAt)
+      ? input.submittedAt
+      : Date.now();
+    const completedAt = typeof input.completedAt === "number" && Number.isFinite(input.completedAt)
+      ? input.completedAt
+      : submittedAt;
+
+    const observed: StudioCoreSubmission = {
+      localPromptId: `prompt_${randomUUID()}`,
+      chainId: `chain_${randomUUID()}`,
+      chainIndex: this.nextChainIndexValue++,
+      promptMode: "response",
+      promptSteeringCount: 0,
+      promptText,
+      effectivePrompt: promptText,
+      queuedWhileBusy: false,
+      submittedAt,
+      userMessageId: input.userMessageId ?? undefined,
+      responseMessageId: input.responseMessageId ?? undefined,
+      responseText: input.responseText ?? "",
+      responseError: input.responseError,
+      completedAt,
+    };
+
+    const historyItem = this.snapshotSubmission(observed);
+    this.history.push(historyItem);
+    this.refreshDerivedState();
+    return historyItem;
+  }
+
   markStopRequested(options?: { clearQueuedSteers?: boolean; backendStatus?: string | null }): void {
     this.assertReady();
     this.state.runState = "stopping";
