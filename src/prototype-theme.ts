@@ -1,9 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export type PrototypeThemePreference = "light" | "dark" | "system";
-export type PrototypeThemeSource = "opencode-local-state" | "opencode-config" | "default";
+export type PrototypeThemeSource = "opencode-local-state" | "opencode-config" | "ghostty-config" | "default";
 
 export type PrototypeThemeRecord = Record<string, string>;
 
@@ -56,6 +56,29 @@ type PrototypeThemeFamilyDefinition = {
   preference?: PrototypeThemePreference;
   dark?: Partial<PrototypePaletteSeed>;
   light?: Partial<PrototypePaletteSeed>;
+};
+
+type ResolvedConfiguredTheme = {
+  raw: string | null;
+  source: PrototypeThemeSource;
+  mode: Exclude<PrototypeThemePreference, "system"> | null;
+};
+
+export type GhosttyThemeReference = {
+  single: string | null;
+  light: string | null;
+  dark: string | null;
+};
+
+type GhosttyThemeDefinition = {
+  name: string;
+  background?: string;
+  foreground?: string;
+  cursorColor?: string;
+  cursorText?: string;
+  selectionBackground?: string;
+  selectionForeground?: string;
+  palette: Map<number, string>;
 };
 
 const BASE_DARK_PALETTE: PrototypePaletteSeed = {
@@ -128,61 +151,136 @@ const BASE_LIGHT_PALETTE: PrototypePaletteSeed = {
 
 const KNOWN_THEME_FAMILIES: PrototypeThemeFamilyDefinition[] = [
   {
-    id: "github-light",
-    match: /github\s*light/,
-    preference: "light",
-    light: {
-      bg: "#f6f8fa",
-      panel: "#ffffff",
-      panel2: "#f6f8fa",
-      text: "#1f2328",
-      muted: "#57606a",
-      accent: "#0969da",
-      warn: "#9a6700",
-      error: "#cf222e",
-      ok: "#1a7f37",
-      mdHeading: "#9a6700",
-      mdLink: "#0969da",
-      mdLinkUrl: "#1b7fd1",
-      mdCode: "#8250df",
-      mdQuote: "#57606a",
-      mdListBullet: "#1a7f37",
-      syntaxComment: "#6e7781",
-      syntaxKeyword: "#cf222e",
-      syntaxFunction: "#8250df",
-      syntaxVariable: "#0550ae",
-      syntaxString: "#0a3069",
-      syntaxNumber: "#0550ae",
-      syntaxOperator: "#24292f",
+    id: "aura",
+    match: /\baura\b/,
+    preference: "dark",
+    dark: {
+      bg: "#0f0f0f",
+      panel: "#15141b",
+      panel2: "#15141b",
+      text: "#edecee",
+      muted: "#6d6d6d",
+      accent: "#a277ff",
+      warn: "#ffca85",
+      error: "#ff6767",
+      ok: "#61ffca",
+      mdHeading: "#a277ff",
+      mdLink: "#f694ff",
+      mdLinkUrl: "#a277ff",
+      mdCode: "#61ffca",
+      mdQuote: "#6d6d6d",
+      mdListBullet: "#a277ff",
+      syntaxComment: "#6d6d6d",
+      syntaxKeyword: "#f694ff",
+      syntaxFunction: "#a277ff",
+      syntaxVariable: "#a277ff",
+      syntaxString: "#61ffca",
+      syntaxNumber: "#9dff65",
+      syntaxOperator: "#f694ff",
     },
   },
   {
-    id: "github-dark",
-    match: /github\s*dark/,
-    preference: "dark",
+    id: "github",
+    match: /github/,
+    light: {
+      bg: "#ffffff",
+      panel: "#f6f8fa",
+      panel2: "#f0f3f6",
+      text: "#24292f",
+      muted: "#57606a",
+      accent: "#1b7c83",
+      warn: "#9a6700",
+      error: "#cf222e",
+      ok: "#1a7f37",
+      mdHeading: "#0969da",
+      mdLink: "#0969da",
+      mdLinkUrl: "#1b7c83",
+      mdCode: "#bf3989",
+      mdQuote: "#57606a",
+      mdListBullet: "#0969da",
+      syntaxComment: "#57606a",
+      syntaxKeyword: "#cf222e",
+      syntaxFunction: "#8250df",
+      syntaxVariable: "#bc4c00",
+      syntaxString: "#0969da",
+      syntaxNumber: "#1b7c83",
+      syntaxOperator: "#cf222e",
+    },
     dark: {
       bg: "#0d1117",
-      panel: "#161b22",
-      panel2: "#21262d",
-      text: "#e6edf3",
+      panel: "#010409",
+      panel2: "#161b22",
+      text: "#c9d1d9",
       muted: "#8b949e",
-      accent: "#2f81f7",
-      warn: "#d29922",
+      accent: "#39c5cf",
+      warn: "#e3b341",
       error: "#f85149",
       ok: "#3fb950",
-      mdHeading: "#d2a8ff",
+      mdHeading: "#58a6ff",
       mdLink: "#58a6ff",
-      mdLinkUrl: "#79c0ff",
-      mdCode: "#ffa657",
+      mdLinkUrl: "#39c5cf",
+      mdCode: "#ff7b72",
       mdQuote: "#8b949e",
-      mdListBullet: "#3fb950",
+      mdListBullet: "#58a6ff",
       syntaxComment: "#8b949e",
       syntaxKeyword: "#ff7b72",
-      syntaxFunction: "#d2a8ff",
-      syntaxVariable: "#79c0ff",
-      syntaxString: "#a5d6ff",
-      syntaxNumber: "#79c0ff",
-      syntaxOperator: "#c9d1d9",
+      syntaxFunction: "#bc8cff",
+      syntaxVariable: "#d29922",
+      syntaxString: "#39c5cf",
+      syntaxNumber: "#58a6ff",
+      syntaxOperator: "#ff7b72",
+    },
+  },
+  {
+    id: "momo-pro",
+    match: /(momo\s*pro|momo-pro|cutie\s*pro)/,
+    light: {
+      bg: "#ffffff",
+      panel: "#f6f8fa",
+      panel2: "#f0f3f6",
+      text: "#0e1116",
+      muted: "#656e77",
+      accent: "#1b7c83",
+      warn: "#4e2c00",
+      error: "#a0111f",
+      ok: "#024c1a",
+      mdHeading: "#622cbc",
+      mdLink: "#1b7c83",
+      mdLinkUrl: "#656e77",
+      mdCode: "#024c1a",
+      mdQuote: "#656e77",
+      mdListBullet: "#1b7c83",
+      syntaxComment: "#656e77",
+      syntaxKeyword: "#622cbc",
+      syntaxFunction: "#1b7c83",
+      syntaxVariable: "#0e1116",
+      syntaxString: "#024c1a",
+      syntaxNumber: "#a0111f",
+      syntaxOperator: "#0e1116",
+    },
+    dark: {
+      bg: "#181818",
+      panel: "#1f1f1f",
+      panel2: "#1a1a1a",
+      text: "#d5d0c9",
+      muted: "#88847f",
+      accent: "#42d9c5",
+      warn: "#f1bb79",
+      error: "#f56e7f",
+      ok: "#bec975",
+      mdHeading: "#d286b7",
+      mdLink: "#42d9c5",
+      mdLinkUrl: "#88847f",
+      mdCode: "#bec975",
+      mdQuote: "#f58669",
+      mdListBullet: "#42d9c5",
+      syntaxComment: "#88847f",
+      syntaxKeyword: "#d286b7",
+      syntaxFunction: "#42d9c5",
+      syntaxVariable: "#d5d0c9",
+      syntaxString: "#bec975",
+      syntaxNumber: "#f58669",
+      syntaxOperator: "#d5d0c9",
     },
   },
   {
@@ -680,11 +778,16 @@ async function readJsonValue(path: string): Promise<Record<string, unknown> | nu
   }
 }
 
-async function readConfiguredTheme(): Promise<{ raw: string | null; source: PrototypeThemeSource }> {
+async function readConfiguredTheme(): Promise<ResolvedConfiguredTheme> {
   const localState = await readJsonValue(join(getXdgStateDirectory(), "opencode", "kv.json"));
   const localTheme = typeof localState?.theme === "string" ? localState.theme.trim() : "";
+  const localMode = typeof localState?.theme_mode === "string" ? localState.theme_mode.trim().toLowerCase() : "";
   if (localTheme) {
-    return { raw: localTheme, source: "opencode-local-state" };
+    return {
+      raw: localTheme,
+      source: "opencode-local-state",
+      mode: localMode === "light" || localMode === "dark" ? localMode : null,
+    };
   }
 
   const configPaths = [
@@ -696,12 +799,274 @@ async function readConfiguredTheme(): Promise<{ raw: string | null; source: Prot
   for (const path of configPaths) {
     const parsed = await readJsonValue(path);
     const configTheme = typeof parsed?.theme === "string" ? parsed.theme.trim() : "";
+    const configMode = typeof parsed?.theme_mode === "string" ? parsed.theme_mode.trim().toLowerCase() : "";
     if (configTheme) {
-      return { raw: configTheme, source: "opencode-config" };
+      return {
+        raw: configTheme,
+        source: "opencode-config",
+        mode: configMode === "light" || configMode === "dark" ? configMode : null,
+      };
     }
   }
 
-  return { raw: null, source: "default" };
+  return { raw: null, source: "default", mode: null };
+}
+
+async function readFirstExistingTextFile(paths: string[]): Promise<string | null> {
+  for (const path of paths) {
+    try {
+      const text = await readFile(path, "utf8");
+      if (text.trim()) return text;
+    } catch {
+      // ignore missing/unreadable paths
+    }
+  }
+  return null;
+}
+
+function normalizeThemeNameToken(value: string): string | null {
+  const trimmed = value.trim().replace(/^['"]|['"]$/g, "").trim();
+  return trimmed || null;
+}
+
+function normalizeThemeModeToken(value: string | null | undefined): Exclude<PrototypeThemePreference, "system"> | null {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "light" || normalized === "dark" ? normalized : null;
+}
+
+function shouldUseGhosttyTheme(configured: ResolvedConfiguredTheme): boolean {
+  const key = normalizeThemeKey(configured.raw ?? "");
+  return key === "system" || key === "opencode";
+}
+
+function getGhosttyConfigPaths(): string[] {
+  return [
+    join(getXdgConfigDirectory(), "ghostty", "config"),
+    join(homedir(), "Library", "Application Support", "com.mitchellh.ghostty", "config"),
+  ];
+}
+
+function getGhosttyThemeSearchPaths(themeName: string): string[] {
+  return [
+    join(getXdgConfigDirectory(), "ghostty", "themes", themeName),
+    join(homedir(), "Library", "Application Support", "com.mitchellh.ghostty", "themes", themeName),
+    join("/Applications", "Ghostty.app", "Contents", "Resources", "ghostty", "themes", themeName),
+  ];
+}
+
+async function resolveGhosttyThemePath(themeName: string): Promise<string | null> {
+  const candidates = getGhosttyThemeSearchPaths(themeName);
+
+  for (const candidate of candidates) {
+    try {
+      const text = await readFile(candidate, "utf8");
+      if (text.trim()) return candidate;
+    } catch {
+      // ignore exact-path misses
+    }
+  }
+
+  for (const candidate of candidates) {
+    const parent = dirname(candidate);
+    const leaf = candidate.split("/").pop()?.toLowerCase();
+    if (!leaf) continue;
+    try {
+      const entries = await readdir(parent);
+      const match = entries.find((entry) => entry.toLowerCase() === leaf);
+      if (match) return join(parent, match);
+    } catch {
+      // ignore missing directories
+    }
+  }
+
+  return null;
+}
+
+export function parseGhosttyThemeReference(value: string): GhosttyThemeReference {
+  const out: GhosttyThemeReference = { single: null, light: null, dark: null };
+  const raw = String(value ?? "").trim();
+  if (!raw) return out;
+
+  for (const segment of raw.split(",")) {
+    const trimmed = segment.trim();
+    if (!trimmed) continue;
+    const modeMatch = trimmed.match(/^(dark|light)\s*:\s*(.+)$/i);
+    if (modeMatch) {
+      const mode = normalizeThemeModeToken(modeMatch[1]);
+      const name = normalizeThemeNameToken(modeMatch[2] ?? "");
+      if (mode === "dark") out.dark = name;
+      if (mode === "light") out.light = name;
+      continue;
+    }
+    out.single = normalizeThemeNameToken(trimmed);
+  }
+
+  if (!out.light && out.single) out.light = out.single;
+  if (!out.dark && out.single) out.dark = out.single;
+  return out;
+}
+
+async function readGhosttyThemeReference(): Promise<GhosttyThemeReference | null> {
+  const content = await readFirstExistingTextFile(getGhosttyConfigPaths());
+  if (!content) return null;
+
+  let themeValue: string | null = null;
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^theme\s*=\s*(.+)$/i);
+    if (!match) continue;
+    themeValue = match[1]?.trim() ?? null;
+  }
+
+  if (!themeValue) return null;
+  const parsed = parseGhosttyThemeReference(themeValue);
+  return parsed.single || parsed.light || parsed.dark ? parsed : null;
+}
+
+async function readGhosttyThemeDefinition(themeName: string): Promise<GhosttyThemeDefinition | null> {
+  const resolvedPath = await resolveGhosttyThemePath(themeName);
+  if (!resolvedPath) return null;
+  const content = await readFile(resolvedPath, "utf8");
+  if (!content.trim()) return null;
+
+  const definition: GhosttyThemeDefinition = {
+    name: themeName,
+    palette: new Map<number, string>(),
+  };
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+
+    const paletteMatch = line.match(/^palette\s*=\s*(\d{1,2})\s*=\s*(#[0-9a-fA-F]{3,6})$/i);
+    if (paletteMatch) {
+      definition.palette.set(Number.parseInt(paletteMatch[1] ?? "", 10), paletteMatch[2]!.toLowerCase());
+      continue;
+    }
+
+    const colorMatch = line.match(/^(background|foreground|cursor-color|cursor-text|selection-background|selection-foreground)\s*=\s*(#[0-9a-fA-F]{3,6})$/i);
+    if (!colorMatch) continue;
+    const key = colorMatch[1]!.toLowerCase();
+    const value = colorMatch[2]!.toLowerCase();
+    if (key === "background") definition.background = value;
+    else if (key === "foreground") definition.foreground = value;
+    else if (key === "cursor-color") definition.cursorColor = value;
+    else if (key === "cursor-text") definition.cursorText = value;
+    else if (key === "selection-background") definition.selectionBackground = value;
+    else if (key === "selection-foreground") definition.selectionForeground = value;
+  }
+
+  if (!definition.background || !definition.foreground) {
+    return null;
+  }
+
+  return definition;
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${[r, g, b].map((value) => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function blendHexColors(base: string, mix: string, amount: number): string {
+  const a = hexToRgb(base);
+  const b = hexToRgb(mix);
+  if (!a || !b) return base;
+  const t = Math.max(0, Math.min(1, amount));
+  return rgbToHex(
+    a.r + (b.r - a.r) * t,
+    a.g + (b.g - a.g) * t,
+    a.b + (b.b - a.b) * t,
+  );
+}
+
+function buildGhosttyPaletteSeed(
+  definition: GhosttyThemeDefinition,
+  mode: Exclude<PrototypeThemePreference, "system">,
+): Partial<PrototypePaletteSeed> {
+  const bg = definition.background!;
+  const text = definition.foreground!;
+  const muted = definition.palette.get(8) ?? blendHexColors(text, bg, 0.45);
+  const accent = definition.palette.get(12) ?? definition.palette.get(4) ?? definition.cursorColor ?? (mode === "light" ? BASE_LIGHT_PALETTE.accent : BASE_DARK_PALETTE.accent);
+  const warn = definition.palette.get(11) ?? definition.palette.get(3) ?? (mode === "light" ? BASE_LIGHT_PALETTE.warn : BASE_DARK_PALETTE.warn);
+  const error = definition.palette.get(9) ?? definition.palette.get(1) ?? (mode === "light" ? BASE_LIGHT_PALETTE.error : BASE_DARK_PALETTE.error);
+  const ok = definition.palette.get(10) ?? definition.palette.get(2) ?? (mode === "light" ? BASE_LIGHT_PALETTE.ok : BASE_DARK_PALETTE.ok);
+  const panel = blendHexColors(bg, text, mode === "light" ? 0.02 : 0.06);
+  const panel2 = blendHexColors(bg, text, mode === "light" ? 0.06 : 0.12);
+
+  return {
+    bg,
+    panel,
+    panel2,
+    text,
+    muted,
+    accent,
+    warn,
+    error,
+    ok,
+    mdHeading: definition.palette.get(13) ?? accent,
+    mdLink: definition.palette.get(12) ?? accent,
+    mdLinkUrl: definition.palette.get(14) ?? definition.palette.get(12) ?? accent,
+    mdCode: definition.palette.get(11) ?? warn,
+    mdQuote: muted,
+    mdListBullet: definition.palette.get(14) ?? ok,
+    syntaxComment: muted,
+    syntaxKeyword: definition.palette.get(13) ?? accent,
+    syntaxFunction: definition.palette.get(14) ?? accent,
+    syntaxVariable: definition.palette.get(12) ?? accent,
+    syntaxString: definition.palette.get(10) ?? ok,
+    syntaxNumber: definition.palette.get(11) ?? warn,
+    syntaxOperator: text,
+    editorBg: panel,
+  };
+}
+
+async function buildGhosttyThemeDescriptor(configured: ResolvedConfiguredTheme): Promise<PrototypeThemeDescriptor | null> {
+  if (!shouldUseGhosttyTheme(configured)) return null;
+
+  const reference = await readGhosttyThemeReference();
+  if (!reference) return null;
+
+  const effectiveMode = configured.mode;
+  const lightName = reference.light;
+  const darkName = reference.dark;
+  const currentName = effectiveMode === "light"
+    ? (lightName ?? darkName)
+    : effectiveMode === "dark"
+      ? (darkName ?? lightName)
+      : (reference.single ?? darkName ?? lightName);
+
+  const lightTheme = lightName ? await readGhosttyThemeDefinition(lightName) : null;
+  const darkTheme = darkName ? await readGhosttyThemeDefinition(darkName) : null;
+  const currentTheme = currentName ? await readGhosttyThemeDefinition(currentName) : null;
+  const lightFamily = resolveThemeFamily(lightName ?? null);
+  const darkFamily = resolveThemeFamily(darkName ?? null);
+  const currentFamily = resolveThemeFamily(currentName ?? null);
+
+  if (!lightTheme && !darkTheme && !currentTheme && !lightFamily && !darkFamily && !currentFamily) {
+    return null;
+  }
+
+  const currentLightSeed = getThemeFamilySeed(currentFamily, "light")
+    ?? (currentTheme ? buildGhosttyPaletteSeed(currentTheme, "light") : undefined);
+  const currentDarkSeed = getThemeFamilySeed(currentFamily, "dark")
+    ?? (currentTheme ? buildGhosttyPaletteSeed(currentTheme, "dark") : undefined);
+  const lightSeed = getThemeFamilySeed(lightFamily, "light")
+    ?? (lightTheme ? buildGhosttyPaletteSeed(lightTheme, "light") : undefined)
+    ?? (normalizeThemeModeToken(effectiveMode) === "light" ? currentLightSeed : undefined);
+  const darkSeed = getThemeFamilySeed(darkFamily, "dark")
+    ?? (darkTheme ? buildGhosttyPaletteSeed(darkTheme, "dark") : undefined)
+    ?? (normalizeThemeModeToken(effectiveMode) === "dark" ? currentDarkSeed : undefined);
+
+  const family = currentFamily?.id ?? lightFamily?.id ?? darkFamily?.id ?? null;
+  return {
+    raw: currentName ?? configured.raw,
+    preference: effectiveMode ?? (lightSeed && darkSeed ? "system" : resolveThemePreference(currentName ?? configured.raw, currentFamily)),
+    source: "ghostty-config",
+    family,
+    lightVars: buildThemeVars("light", lightSeed),
+    darkVars: buildThemeVars("dark", darkSeed),
+  };
 }
 
 function hexToRgb(color: string): { r: number; g: number; b: number } | null {
@@ -762,30 +1127,72 @@ function resolveThemeFamily(raw: string | null): PrototypeThemeFamilyDefinition 
   return KNOWN_THEME_FAMILIES.find((entry) => entry.match.test(key));
 }
 
+function getThemeFamilySeed(
+  family: PrototypeThemeFamilyDefinition | undefined,
+  mode: Exclude<PrototypeThemePreference, "system">,
+): Partial<PrototypePaletteSeed> | undefined {
+  return mode === "light" ? family?.light : family?.dark;
+}
+
+function resolveThemePreference(
+  raw: string | null,
+  family: PrototypeThemeFamilyDefinition | undefined,
+  modeOverride?: Exclude<PrototypeThemePreference, "system"> | null,
+): PrototypeThemePreference {
+  if (modeOverride) {
+    if (!family) return modeOverride;
+    if (modeOverride === "light" && family.light) return "light";
+    if (modeOverride === "dark" && family.dark) return "dark";
+  }
+  return family?.preference ?? inferThemePreference(raw);
+}
+
+function normalizeColorToken(value: string | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function derivePrototypePanel2Color(
+  panel: string,
+  bg: string,
+  muted: string,
+  mode: Exclude<PrototypeThemePreference, "system">,
+): string {
+  return mode === "light"
+    ? blendHexColors(panel, muted, 0.06)
+    : blendHexColors(panel, bg, 0.45);
+}
+
 function buildThemeVars(mode: Exclude<PrototypeThemePreference, "system">, override: Partial<PrototypePaletteSeed> | undefined): PrototypeThemeRecord {
   const base = mode === "light" ? BASE_LIGHT_PALETTE : BASE_DARK_PALETTE;
+  const explicit = override ?? {};
   const palette: PrototypePaletteSeed = {
     ...base,
-    ...(override ?? {}),
+    ...explicit,
   };
 
+  const panel2 = !palette.panel2 || normalizeColorToken(palette.panel2) === normalizeColorToken(palette.panel)
+    ? derivePrototypePanel2Color(palette.panel, palette.bg, palette.muted, mode)
+    : palette.panel2;
+  const editorBg = explicit.editorBg ?? (mode === "light"
+    ? blendHexColors(palette.panel, "#ffffff", 0.5)
+    : palette.panel);
   const border = palette.border ?? withAlpha(palette.text, mode === "light" ? 0.12 : 0.10, base.border ?? "rgba(0, 0, 0, 0.1)");
   const borderMuted = palette.borderMuted ?? withAlpha(palette.text, mode === "light" ? 0.10 : 0.08, base.borderMuted ?? "rgba(0, 0, 0, 0.08)");
-  const accentSoft = palette.accentSoft ?? withAlpha(palette.accent, mode === "light" ? 0.12 : 0.14, base.accentSoft ?? "rgba(0, 0, 0, 0.12)");
-  const accentSoftStrong = palette.accentSoftStrong ?? withAlpha(palette.accent, mode === "light" ? 0.22 : 0.30, base.accentSoftStrong ?? "rgba(0, 0, 0, 0.22)");
-  const markerBorder = palette.markerBorder ?? withAlpha(palette.accent, mode === "light" ? 0.30 : 0.45, base.markerBorder ?? "rgba(0, 0, 0, 0.3)");
-  const accentContrast = palette.accentContrast ?? defaultContrastColor(palette.accent, "#08101f", "#ffffff");
-  const errorContrast = palette.errorContrast ?? defaultContrastColor(palette.error, "#210908", "#ffffff");
-  const panelShadow = palette.panelShadow ?? (mode === "light"
+  const accentSoft = explicit.accentSoft ?? withAlpha(palette.accent, mode === "light" ? 0.28 : 0.35, base.accentSoft ?? "rgba(0, 0, 0, 0.12)");
+  const accentSoftStrong = explicit.accentSoftStrong ?? withAlpha(palette.accent, mode === "light" ? 0.35 : 0.40, base.accentSoftStrong ?? "rgba(0, 0, 0, 0.22)");
+  const markerBorder = explicit.markerBorder ?? withAlpha(palette.accent, mode === "light" ? 0.30 : 0.45, base.markerBorder ?? "rgba(0, 0, 0, 0.3)");
+  const accentContrast = explicit.accentContrast ?? defaultContrastColor(palette.accent, "#08101f", "#ffffff");
+  const errorContrast = explicit.errorContrast ?? defaultContrastColor(palette.error, "#210908", "#ffffff");
+  const panelShadow = explicit.panelShadow ?? (mode === "light"
     ? "0 12px 28px rgba(15, 23, 42, 0.10)"
     : "0 12px 30px rgba(0, 0, 0, 0.22)");
 
   return {
     "--bg": palette.bg,
     "--panel": palette.panel,
-    "--panel-2": palette.panel2,
+    "--panel-2": panel2,
     "--card": palette.panel,
-    "--editor-bg": palette.editorBg ?? palette.panel,
+    "--editor-bg": editorBg,
     "--text": palette.text,
     "--muted": palette.muted,
     "--border": border,
@@ -822,10 +1229,14 @@ function cssDeclarations(vars: PrototypeThemeRecord): string {
     .join("\n");
 }
 
-export function buildPrototypeThemeDescriptor(raw: string | null | undefined, source: PrototypeThemeSource = "default"): PrototypeThemeDescriptor {
+export function buildPrototypeThemeDescriptor(
+  raw: string | null | undefined,
+  source: PrototypeThemeSource = "default",
+  modeOverride?: Exclude<PrototypeThemePreference, "system"> | null,
+): PrototypeThemeDescriptor {
   const normalizedRaw = typeof raw === "string" && raw.trim() ? raw.trim() : null;
   const family = resolveThemeFamily(normalizedRaw);
-  const inferredPreference = family?.preference ?? inferThemePreference(normalizedRaw);
+  const inferredPreference = resolveThemePreference(normalizedRaw, family, modeOverride);
   const lightVars = buildThemeVars("light", family?.light);
   const darkVars = buildThemeVars("dark", family?.dark);
 
@@ -856,5 +1267,9 @@ export function buildPrototypeThemeStylesheet(theme: PrototypeThemeDescriptor): 
 
 export async function readPrototypeThemeDescriptor(): Promise<PrototypeThemeDescriptor> {
   const configured = await readConfiguredTheme();
-  return buildPrototypeThemeDescriptor(configured.raw, configured.source);
+  const ghosttyTheme = await buildGhosttyThemeDescriptor(configured);
+  if (ghosttyTheme) {
+    return ghosttyTheme;
+  }
+  return buildPrototypeThemeDescriptor(configured.raw, configured.source, configured.mode);
 }
