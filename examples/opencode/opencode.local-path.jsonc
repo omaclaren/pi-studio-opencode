@@ -1,0 +1,14 @@
+{
+  // Copy or merge this into your project-local `.opencode/opencode.jsonc`
+  // or your user config at `~/.config/opencode/opencode.json` / `.jsonc`.
+  //
+  // Replace the plugin path with your local checkout path.
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["/absolute/path/to/pi-studio-opencode"],
+  "command": {
+    "studio": {
+      "template": "Open π Studio for this active opencode session.",
+      "description": "Open π Studio attached to the current opencode session"
+    }
+  }
+}

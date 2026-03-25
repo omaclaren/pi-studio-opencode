@@ -119,6 +119,11 @@ What it does:
 
 The launcher plugin can best-effort inject a `studio` command entry, but the **reliable** current setup is still to add an explicit command entry in your opencode config.
 
+Ready-to-copy examples are now included in:
+
+- `examples/opencode/opencode.local-path.jsonc`
+- `examples/opencode/INSTALL.md`
+
 Example `opencode.json` snippet:
 
 ```json
@@ -133,7 +138,7 @@ Example `opencode.json` snippet:
 }
 ```
 
-Then from an active opencode session, run:
+After editing config, start a fresh opencode session, then run:
 
 ```text
 /studio
