@@ -395,6 +395,196 @@ function normalizeObsidianImages(markdown: string): string {
     .replace(/!\[\[([^\]]+)\]\]/g, (_m, path) => `![](<${path}>)`);
 }
 
+function stripPrototypeMarkdownHtmlCommentsInSegment(markdown: string): string {
+  const source = String(markdown ?? "");
+  let out = "";
+  let i = 0;
+  let codeSpanFenceLength = 0;
+  let inHtmlComment = false;
+
+  while (i < source.length) {
+    if (inHtmlComment) {
+      if (source.startsWith("-->", i)) {
+        inHtmlComment = false;
+        i += 3;
+        continue;
+      }
+      const ch = source[i]!;
+      if (ch === "\n" || ch === "\r") out += ch;
+      i += 1;
+      continue;
+    }
+
+    if (codeSpanFenceLength > 0) {
+      const fence = "`".repeat(codeSpanFenceLength);
+      if (source.startsWith(fence, i)) {
+        out += fence;
+        i += codeSpanFenceLength;
+        codeSpanFenceLength = 0;
+        continue;
+      }
+      out += source[i]!;
+      i += 1;
+      continue;
+    }
+
+    const backtickMatch = source.slice(i).match(/^`+/);
+    if (backtickMatch) {
+      const fence = backtickMatch[0]!;
+      codeSpanFenceLength = fence.length;
+      out += fence;
+      i += fence.length;
+      continue;
+    }
+
+    if (source.startsWith("<!--", i)) {
+      inHtmlComment = true;
+      i += 4;
+      continue;
+    }
+
+    out += source[i]!;
+    i += 1;
+  }
+
+  return out;
+}
+
+function stripPrototypeMarkdownHtmlComments(markdown: string): string {
+  const lines = String(markdown ?? "").split("\n");
+  const out: string[] = [];
+  let plainBuffer: string[] = [];
+  let inFence = false;
+  let fenceChar: "`" | "~" | undefined;
+  let fenceLength = 0;
+
+  const flushPlain = () => {
+    if (plainBuffer.length === 0) return;
+    out.push(stripPrototypeMarkdownHtmlCommentsInSegment(plainBuffer.join("\n")));
+    plainBuffer = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    const fenceMatch = trimmed.match(/^(`{3,}|~{3,})/);
+
+    if (fenceMatch) {
+      const marker = fenceMatch[1]!;
+      const markerChar = marker[0] as "`" | "~";
+      const markerLength = marker.length;
+
+      if (!inFence) {
+        flushPlain();
+        inFence = true;
+        fenceChar = markerChar;
+        fenceLength = markerLength;
+        out.push(line);
+        continue;
+      }
+
+      if (fenceChar === markerChar && markerLength >= fenceLength) {
+        inFence = false;
+        fenceChar = undefined;
+        fenceLength = 0;
+      }
+
+      out.push(line);
+      continue;
+    }
+
+    if (inFence) {
+      out.push(line);
+    } else {
+      plainBuffer.push(line);
+    }
+  }
+
+  flushPlain();
+  return out.join("\n");
+}
+
+const PROTOTYPE_PREVIEW_PAGE_BREAK_SENTINEL_PREFIX = "PI_STUDIO_PAGE_BREAK__";
+
+function replacePrototypePreviewPageBreakCommands(markdown: string): string {
+  const lines = String(markdown ?? "").split("\n");
+  const out: string[] = [];
+  let plainBuffer: string[] = [];
+  let inFence = false;
+  let fenceChar: "`" | "~" | undefined;
+  let fenceLength = 0;
+
+  const flushPlain = () => {
+    if (plainBuffer.length === 0) return;
+    out.push(
+      plainBuffer.map((line) => {
+        const match = line.trim().match(/^\\(newpage|pagebreak|clearpage)(?:\s*\[[^\]]*\])?\s*$/i);
+        if (!match) return line;
+        const command = match[1]!.toLowerCase();
+        return `${PROTOTYPE_PREVIEW_PAGE_BREAK_SENTINEL_PREFIX}${command.toUpperCase()}__`;
+      }).join("\n"),
+    );
+    plainBuffer = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    const fenceMatch = trimmed.match(/^(`{3,}|~{3,})/);
+
+    if (fenceMatch) {
+      const marker = fenceMatch[1]!;
+      const markerChar = marker[0] as "`" | "~";
+      const markerLength = marker.length;
+
+      if (!inFence) {
+        flushPlain();
+        inFence = true;
+        fenceChar = markerChar;
+        fenceLength = markerLength;
+        out.push(line);
+        continue;
+      }
+
+      if (fenceChar === markerChar && markerLength >= fenceLength) {
+        inFence = false;
+        fenceChar = undefined;
+        fenceLength = 0;
+      }
+
+      out.push(line);
+      continue;
+    }
+
+    if (inFence) {
+      out.push(line);
+    } else {
+      plainBuffer.push(line);
+    }
+  }
+
+  flushPlain();
+  return out.join("\n");
+}
+
+function escapePrototypeHtmlText(value: string): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function decoratePrototypePreviewPageBreakHtml(html: string): string {
+  return String(html ?? "").replace(
+    new RegExp(`<p>${PROTOTYPE_PREVIEW_PAGE_BREAK_SENTINEL_PREFIX}(NEWPAGE|PAGEBREAK|CLEARPAGE)__<\\/p>`, "gi"),
+    (_match, command: string) => {
+      const normalized = String(command || "").toLowerCase();
+      const label = normalized === "clearpage" ? "Clear page" : "Page break";
+      return `<div class="studio-page-break" data-page-break-kind="${normalized}"><span class="studio-page-break-rule" aria-hidden="true"></span><span class="studio-page-break-label">${escapePrototypeHtmlText(label)}</span><span class="studio-page-break-rule" aria-hidden="true"></span></div>`;
+    },
+  );
+}
+
 function stripMathMlAnnotationTags(html: string): string {
   return html
     .replace(/<annotation-xml\b[\s\S]*?<\/annotation-xml>/gi, "")
@@ -404,6 +594,8 @@ function stripMathMlAnnotationTags(html: string): string {
 async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?: string): Promise<string> {
   const pandocCommand = process.env.PANDOC_PATH?.trim() || "pandoc";
   const isLatex = /\\documentclass\b|\\begin\{document\}/.test(markdown);
+  const markdownWithoutHtmlComments = isLatex ? String(markdown || "") : stripPrototypeMarkdownHtmlComments(String(markdown || ""));
+  const markdownWithPreviewPageBreaks = isLatex ? markdownWithoutHtmlComments : replacePrototypePreviewPageBreakCommands(markdownWithoutHtmlComments);
   const inputFormat = isLatex
     ? "latex"
     : "markdown+lists_without_preceding_blankline-blank_before_blockquote-blank_before_header+tex_math_dollars+tex_math_single_backslash+tex_math_double_backslash+autolink_bare_uris-raw_html";
@@ -413,8 +605,8 @@ async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?
     args.push("--embed-resources", "--standalone");
   }
   const normalizedMarkdown = isLatex
-    ? String(markdown || "")
-    : normalizeObsidianImages(normalizeMathDelimiters(String(markdown || "")));
+    ? markdownWithPreviewPageBreaks
+    : normalizeObsidianImages(normalizeMathDelimiters(markdownWithPreviewPageBreaks));
   const pandocWorkingDir = await resolvePrototypePandocWorkingDir(resourcePath);
 
   return await new Promise<string>((resolvePromise, rejectPromise) => {
@@ -460,6 +652,9 @@ async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?
           if (bodyMatch) {
             renderedHtml = bodyMatch[1] ?? renderedHtml;
           }
+        }
+        if (!isLatex) {
+          renderedHtml = decoratePrototypePreviewPageBreakHtml(renderedHtml);
         }
         succeed(stripMathMlAnnotationTags(renderedHtml));
         return;

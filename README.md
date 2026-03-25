@@ -8,6 +8,7 @@ Current prototype support includes:
 - run / queue steering / stop / history flows
 - response and editor preview with math fallback
 - file load/save, working-dir-based preview resolution, and editor syntax highlighting
+- `.qmd`/Markdown preview improvements including targeted HTML comment stripping, preview page-break markers, Quarto-style callouts, `fig-align`, and local PDF figure preview via `pdf.js`
 
 Full parity with `pi-studio` is still in progress.
 
@@ -164,6 +165,10 @@ The browser prototype is still intentionally lightweight, but it now covers a la
 - preview/math behavior including:
   - preserved multiline matrix-style display math
   - selective MathJax fallback for pandoc-unsupported math
+  - targeted Markdown/QMD HTML comment stripping
+  - preview-only page-break dividers for standalone `\newpage` / `\pagebreak` / `\clearpage`
+  - Quarto-style callout styling and `fig-align` support
+  - local PDF figure preview via `pdf.js`
   - response-pane repaint and scroll-reset behavior closer to `pi-studio`
 - **Run**, **Queue steering**, and **Stop** controls
 - live host/session status
