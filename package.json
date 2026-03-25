@@ -2,16 +2,40 @@
   "name": "pi-studio-opencode",
   "private": true,
   "type": "module",
+  "main": "./dist/opencode-plugin.js",
+  "types": "./dist/opencode-plugin.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/opencode-plugin.js",
+      "types": "./dist/opencode-plugin.d.ts"
+    },
+    "./launcher": {
+      "import": "./dist/launcher.js",
+      "types": "./dist/launcher.d.ts"
+    }
+  },
+  "bin": {
+    "pi-studio-opencode": "./dist/launcher.js"
+  },
+  "files": [
+    "dist",
+    "static",
+    "README.md",
+    "ARCHITECTURE.md"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "start": "tsx src/main.ts",
     "check": "tsc --noEmit",
     "test": "tsx --test test/**/*.test.ts",
     "smoke": "tsx src/main.ts --multi-steer-test --new-run-after-idle-test --abort-test",
     "host-demo": "tsx src/demo-host.ts",
     "pi-host-demo": "tsx src/demo-host-pi.ts",
-    "prototype": "tsx src/prototype-server.ts"
+    "prototype": "tsx src/prototype-server.ts",
+    "launch": "tsx src/launcher.ts"
   },
   "dependencies": {
+    "@opencode-ai/plugin": "^1.2.27",
     "@opencode-ai/sdk": "^1.2.27"
   },
   "devDependencies": {

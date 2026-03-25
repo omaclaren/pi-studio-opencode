@@ -24,6 +24,8 @@ const state = {
   currentRenderedPreviewKey: "",
   pendingResponseScrollReset: false,
   lastResponseIdentityKey: "",
+  snapshotPollTimer: null,
+  snapshotPollInFlight: false,
 };
 
 const MATHJAX_CDN_URL = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js";
@@ -209,11 +211,24 @@ function formatModel(snapshot) {
 }
 
 function formatSessionLabel(snapshot) {
+  const sessionId = String(snapshot?.state?.sessionId || "").trim();
   const sessionTitle = String(snapshot?.state?.sessionTitle || "").trim();
-  if (!sessionTitle) return "";
-  if (/^Studio host\b/i.test(sessionTitle)) return "";
-  if (sessionTitle === "π Studio" || sessionTitle === "Studio") return "";
-  return sessionTitle;
+  const useTitle = sessionTitle && !/^Studio host\b/i.test(sessionTitle) && sessionTitle !== "π Studio" && sessionTitle !== "Studio";
+  if (useTitle && sessionId) {
+    return `${sessionTitle} (${sessionId})`;
+  }
+  if (useTitle) {
+    return sessionTitle;
+  }
+  return sessionId;
+}
+
+function formatProjectLabel(snapshot) {
+  const directory = String(snapshot?.launchContext?.directory || "").trim();
+  if (!directory) return "";
+  const normalized = directory.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : normalized;
 }
 
 function readStoredToggle(storageKey) {
@@ -1849,6 +1864,11 @@ function renderFooterMeta() {
     parts.push(`Model: ${model}`);
   }
 
+  const projectLabel = formatProjectLabel(state.snapshot);
+  if (projectLabel) {
+    parts.push(`Project: ${projectLabel}`);
+  }
+
   const sessionLabel = formatSessionLabel(state.snapshot);
   if (sessionLabel) {
     parts.push(`Session: ${sessionLabel}`);
@@ -1858,6 +1878,16 @@ function renderFooterMeta() {
   parts.push(`Queue: ${queue}`);
 
   elements.footerMetaText.textContent = parts.join(" · ");
+  if (elements.footerMeta) {
+    const titleParts = [];
+    const directory = String(state.snapshot?.launchContext?.directory || "").trim();
+    if (directory) titleParts.push(`Project directory: ${directory}`);
+    const sessionId = String(state.snapshot?.state?.sessionId || "").trim();
+    if (sessionId) titleParts.push(`Session ID: ${sessionId}`);
+    const baseUrl = String(state.snapshot?.launchContext?.baseUrl || "").trim();
+    if (baseUrl) titleParts.push(`Opencode server: ${baseUrl}`);
+    elements.footerMeta.title = titleParts.join("\n");
+  }
 }
 
 function updateActionState() {
@@ -1952,10 +1982,56 @@ async function postJson(path, payload = {}) {
       state.snapshot = data.snapshot;
     }
     render();
+    restartSnapshotPolling(true);
     return data;
   } finally {
     state.busy = false;
     render();
+  }
+}
+
+function getSnapshotPollDelayMs() {
+  if (typeof document !== "undefined" && document.hidden) {
+    return 1200;
+  }
+  const runState = state.snapshot?.state?.runState ?? "idle";
+  if (runState === "running" || runState === "stopping") {
+    return 120;
+  }
+  return 500;
+}
+
+function cancelSnapshotPolling() {
+  if (!state.snapshotPollTimer) return;
+  window.clearTimeout(state.snapshotPollTimer);
+  state.snapshotPollTimer = null;
+}
+
+function scheduleSnapshotPolling(delayMs = getSnapshotPollDelayMs()) {
+  cancelSnapshotPolling();
+  state.snapshotPollTimer = window.setTimeout(() => {
+    state.snapshotPollTimer = null;
+    void pollSnapshotOnce();
+  }, Math.max(0, delayMs));
+}
+
+function restartSnapshotPolling(immediate = false) {
+  scheduleSnapshotPolling(immediate ? 0 : getSnapshotPollDelayMs());
+}
+
+async function pollSnapshotOnce() {
+  if (state.snapshotPollInFlight) {
+    restartSnapshotPolling();
+    return;
+  }
+  state.snapshotPollInFlight = true;
+  try {
+    await fetchSnapshot();
+  } catch (error) {
+    setTransientStatus(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    state.snapshotPollInFlight = false;
+    restartSnapshotPolling();
   }
 }
 
@@ -2433,11 +2509,13 @@ async function main() {
   setEditorHighlightEnabled(readStoredToggle(EDITOR_HIGHLIGHT_STORAGE_KEY) ?? true);
   wireEvents();
   await fetchSnapshot();
-  window.setInterval(() => {
-    void fetchSnapshot().catch((error) => {
-      setTransientStatus(error instanceof Error ? error.message : String(error), "error");
-    });
-  }, 500);
+  restartSnapshotPolling();
+  document.addEventListener("visibilitychange", () => {
+    restartSnapshotPolling(!document.hidden);
+  });
+  window.addEventListener("focus", () => {
+    restartSnapshotPolling(true);
+  });
 }
 
 void main().catch((error) => {

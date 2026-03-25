@@ -21,7 +21,37 @@ npm install
 
 ## Run
 
-Start a local opencode server automatically:
+Launch the browser Studio surface directly:
+
+```bash
+npm run launch -- --directory "/path/to/project"
+```
+
+That starts the local Studio browser server, auto-opens your browser, and either:
+
+- starts a local opencode server automatically, or
+- reuses an existing opencode server/session when you pass `--base-url` / `--session`
+
+Example attaching to an existing opencode server/session:
+
+```bash
+npm run launch -- --base-url "http://127.0.0.1:4096" --session "<session-id>" --directory "/path/to/project"
+```
+
+Build the standalone CLI bin:
+
+```bash
+npm run build
+node dist/launcher.js --directory "/path/to/project"
+```
+
+The compiled launcher is also exposed as:
+
+```bash
+pi-studio-opencode --directory "/path/to/project"
+```
+
+Start a local opencode server automatically for the non-browser queue/provenance driver:
 
 ```bash
 npm start -- --directory "/path/to/project"
@@ -69,12 +99,70 @@ Then open:
 http://127.0.0.1:4312
 ```
 
+## Launch from an active opencode session
+
+There is now a thin opencode-side launcher plugin in:
+
+- `src/opencode-plugin.ts`
+
+What it does:
+
+- intercepts a `studio` command from the active opencode session
+- starts `pi-studio-opencode` with:
+  - current opencode `serverUrl`
+  - current `sessionID`
+  - current project `directory`
+- opens the browser Studio surface
+- cancels the placeholder command before a normal model turn is sent
+
+### Current reliable setup
+
+The launcher plugin can best-effort inject a `studio` command entry, but the **reliable** current setup is still to add an explicit command entry in your opencode config.
+
+Example `opencode.json` snippet:
+
+```json
+{
+  "plugin": ["/absolute/path/to/pi-studio-opencode"],
+  "command": {
+    "studio": {
+      "template": "Open π Studio for this active opencode session.",
+      "description": "Open π Studio attached to the current opencode session"
+    }
+  }
+}
+```
+
+Then from an active opencode session, run:
+
+```text
+/studio
+```
+
+Optional launcher flags can be forwarded after the command, for example:
+
+```text
+/studio --no-open --port 4312
+```
+
+Notes:
+
+- `--base-url`, `--session`, and `--directory` are intentionally taken from the **current active opencode session** and user-supplied overrides are ignored.
+- the browser UI now shows linked project/session information in the footer/tooltip.
+- the current implementation keeps the Studio browser surface external; it does **not** try to embed Studio inside opencode.
+
 ## Optional flags
+
+Shared launcher/prototype flags:
 
 - `--session <id>` reuse an existing session instead of creating one
 - `--title <title>` session title for a newly created session
-- `--host <host>` prototype server bind host (for `npm run prototype`)
-- `--port <port>` prototype server bind port (for `npm run prototype`)
+- `--host <host>` Studio browser server bind host
+- `--port <port>` Studio browser server bind port (`0` = auto-select; launcher default)
+- `--no-open` start the browser server without opening a browser automatically (launcher only)
+
+Driver/smoke flags:
+
 - `--queue-delay-ms <n>` delay before queueing the first steer
 - `--second-queue-delay-ms <n>` delay before queueing the second steer
 - `--settle-timeout-ms <n>` wait timeout for queued replies
@@ -116,6 +204,8 @@ New files:
 - `src/mock-pi-session.ts` — mock Pi session used for local validation
 - `src/demo-host-pi.ts` — demo driver for the Pi host sketch
 - `src/prototype-server.ts` — tiny HTTP server exposing the opencode host to a browser UI
+- `src/launcher.ts` — standalone browser-launch CLI / bin
+- `src/opencode-plugin.ts` — thin opencode command hook that launches Studio for the current session
 - `static/prototype.html` / `static/prototype.css` / `static/prototype.js` — minimal browser prototype
 
 ### Shared host contract

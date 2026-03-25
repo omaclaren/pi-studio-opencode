@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
+import type { AddressInfo } from "node:net";
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -7,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createOpencodeStudioHost, type OpencodeStudioHostTelemetryEvent } from "./host-opencode.js";
 import type { StudioHostCapabilities, StudioHostHistoryItem, StudioHostState } from "./studio-host-types.js";
 
-type CliOptions = {
+export type PrototypeServerOptions = {
   directory: string;
   baseUrl?: string;
   sessionId?: string;
@@ -47,7 +48,7 @@ type PrototypeModelSnapshot = {
   at: number;
 };
 
-type PrototypeSnapshot = {
+export type PrototypeSnapshot = {
   state: StudioHostState;
   capabilities: StudioHostCapabilities;
   history: StudioHostHistoryItem[];
@@ -55,8 +56,21 @@ type PrototypeSnapshot = {
   activeTurn: PrototypeTurnSnapshot | null;
   lastCompletedTurn: PrototypeTurnSnapshot | null;
   currentModel: PrototypeModelSnapshot | null;
+  launchContext: {
+    directory: string;
+    baseUrl: string | null;
+  };
   serverStartedAt: number;
   now: number;
+};
+
+export type PrototypeServerInstance = {
+  url: string;
+  host: string;
+  port: number;
+  getSnapshot(): PrototypeSnapshot;
+  getState(): StudioHostState;
+  stop(): Promise<void>;
 };
 
 const STATIC_DIR = resolve(fileURLToPath(new URL("../static", import.meta.url)));
@@ -113,8 +127,8 @@ async function resolvePrototypePandocWorkingDir(baseDir: string | undefined): Pr
   }
 }
 
-function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = {
+function parseArgs(argv: string[]): PrototypeServerOptions {
+  const options: PrototypeServerOptions = {
     directory: process.cwd(),
     host: "127.0.0.1",
     port: 4312,
@@ -151,7 +165,7 @@ function parseArgs(argv: string[]): CliOptions {
     }
     if (arg === "--port" && next) {
       options.port = Number.parseInt(next, 10);
-      if (!Number.isFinite(options.port) || options.port <= 0) {
+      if (!Number.isFinite(options.port) || options.port < 0) {
         throw new Error(`Invalid --port value: ${next}`);
       }
       i += 1;
@@ -176,7 +190,7 @@ Options:
   --session <id>        Reuse an existing session
   --title <title>       Title for a newly created session
   --host <host>         HTTP bind host (default: 127.0.0.1)
-  --port <port>         HTTP bind port (default: 4312)
+  --port <port>         HTTP bind port (default: 4312; use 0 for auto-select)
 `);
   process.exit(0);
 }
@@ -667,13 +681,15 @@ async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?
   });
 }
 
-async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+export async function startPrototypeServer(options: PrototypeServerOptions): Promise<PrototypeServerInstance> {
   const serverStartedAt = Date.now();
   const logLines: Array<{ at: number; line: string }> = [];
   let activeTurn: PrototypeTurnRecord | null = null;
   let lastCompletedTurn: PrototypeTurnRecord | null = null;
   let currentModel: PrototypeModelSnapshot | null = null;
+  let listenHost = options.host;
+  let listenPort = options.port;
+  let stopped = false;
 
   const updateCurrentModel = (input: {
     providerID?: string;
@@ -810,13 +826,17 @@ async function main(): Promise<void> {
       activeTurn: snapshotTurn(activeTurn),
       lastCompletedTurn: snapshotTurn(lastCompletedTurn),
       currentModel,
+      launchContext: {
+        directory: options.directory,
+        baseUrl: options.baseUrl ?? null,
+      },
       serverStartedAt,
       now: Date.now(),
     };
   }
 
   const server = createServer(async (request, response) => {
-    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? `${options.host}:${options.port}`}`);
+    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? `${listenHost}:${listenPort}`}`);
 
     try {
       if (request.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/static/"))) {
@@ -905,20 +925,21 @@ async function main(): Promise<void> {
     }
   });
 
-  const shutdown = async (): Promise<void> => {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+  const stop = async (): Promise<void> => {
+    if (stopped) return;
+    stopped = true;
     unsubscribe();
     await host.close();
-    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await new Promise<void>((resolveClose, rejectClose) => {
+      server.close((error) => {
+        if (error) {
+          rejectClose(error);
+          return;
+        }
+        resolveClose();
+      });
+    });
   };
-
-  const onSignal = (): void => {
-    void shutdown().finally(() => process.exit(0));
-  };
-
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
 
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
@@ -928,12 +949,51 @@ async function main(): Promise<void> {
     });
   });
 
-  console.log(`Prototype ready at http://${options.host}:${options.port}`);
-  console.log(`Session: ${currentState.sessionId ?? "(pending)"}`);
+  const address = server.address();
+  if (address && typeof address !== "string") {
+    const info = address as AddressInfo;
+    listenPort = info.port;
+    listenHost = info.address;
+  }
+
+  return {
+    url: `http://${listenHost}:${listenPort}`,
+    host: listenHost,
+    port: listenPort,
+    getSnapshot: buildSnapshot,
+    getState: () => currentState,
+    stop,
+  };
+}
+
+async function runPrototypeCli(): Promise<void> {
+  const options = parseArgs(process.argv.slice(2));
+  const instance = await startPrototypeServer(options);
+
+  const shutdown = async (): Promise<void> => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    await instance.stop();
+  };
+
+  const onSignal = (): void => {
+    void shutdown().finally(() => process.exit(0));
+  };
+
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
+  console.log(`Prototype ready at ${instance.url}`);
+  console.log(`Session: ${instance.getState().sessionId ?? "(pending)"}`);
   console.log(`Working directory: ${options.directory}`);
 }
 
-void main().catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : error);
-  process.exitCode = 1;
-});
+const isPrototypeServerDirectRun = process.argv[1]
+  && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isPrototypeServerDirectRun) {
+  void runPrototypeCli().catch((error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : error);
+    process.exitCode = 1;
+  });
+}
