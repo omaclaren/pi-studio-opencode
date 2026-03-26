@@ -3,6 +3,8 @@
   // or your user config at `~/.config/opencode/opencode.json` / `.jsonc`.
   //
   // Replace the plugin path with your local checkout path.
+  // After editing config, fully restart opencode, then run `/studio` from a plain interactive session.
+  // The normal `/studio` flow no longer requires `opencode --port ...`.
   "$schema": "https://opencode.ai/config.json",
   "plugin": ["/absolute/path/to/pi-studio-opencode"],
   "command": {

@@ -37,10 +37,10 @@ Or merge the same snippet into:
 
 OpenCode loads config/plugins at startup, so after editing config it is safest to start a fresh opencode session.
 
-For the current interactive `/studio` flow, start opencode with an exposed local server, for example:
+The normal interactive `/studio` flow now works from plain opencode:
 
 ```bash
-opencode --port 4096
+opencode
 ```
 
 ## 4. Launch Studio
@@ -61,5 +61,7 @@ Optional launcher flags can be forwarded after the command, for example:
 
 - `--base-url`, `--session`, and `--directory` are always taken from the current active opencode session.
 - User-supplied values for those launcher flags are intentionally ignored.
-- If you use `--no-open`, open the full tokenized Studio URL printed by the launcher / child log, not just `http://127.0.0.1:<port>/`.
+- You do **not** need `opencode --port 4096` for the normal interactive `/studio` flow anymore.
+- If you use `--no-open`, open the full tokenized Studio URL shown by the Studio toast/log, not just `http://127.0.0.1:<port>/`.
+- If `/studio` gets sent to the model as ordinary text, the plugin likely did not load; rebuild the repo, then fully restart opencode.
 - The browser UI is external and linked to the same opencode session; this is not a native embedded pane.

@@ -102,17 +102,15 @@ http://127.0.0.1:4312
 
 ## Launch from an active opencode session
 
-There is now a thin opencode-side launcher plugin in:
+There is now a thin opencode-side launcher/bridge plugin in:
 
 - `src/opencode-plugin.ts`
 
 What it does:
 
 - intercepts a `studio` command from the active opencode session
-- starts `pi-studio-opencode` with:
-  - current opencode `serverUrl`
-  - current `sessionID`
-  - current project `directory`
+- starts a local Studio browser server for that session
+- binds Studio to the current opencode session via the plugin client/event hooks
 - opens the browser Studio surface
 - cancels the placeholder command before a normal model turn is sent
 
@@ -139,7 +137,7 @@ Example `opencode.json` snippet:
 }
 ```
 
-After editing config, start a fresh opencode session, then run:
+After editing config, start a fresh plain interactive opencode session, then run:
 
 ```text
 /studio
@@ -154,10 +152,11 @@ Optional launcher flags can be forwarded after the command, for example:
 Notes:
 
 - `--base-url`, `--session`, and `--directory` are intentionally taken from the **current active opencode session** and user-supplied overrides are ignored.
-- for the current interactive TUI flow, opencode needs an exposed local server (for example `opencode --port 4096`) so the browser Studio can attach back to the same live session.
-- if you launch with `--no-open`, open the **full tokenized URL** printed by the launcher / child log, not just the bare port root.
+- the normal interactive `/studio` flow now works from plain `opencode`; `opencode --port 4096` is no longer required.
+- if you launch with `--no-open`, use the **full tokenized URL** shown by the Studio toast/log, not just the bare port root.
 - the browser UI now shows linked project/session information in the footer/tooltip and follows the current opencode light/dark/system theme choice.
 - the current implementation keeps the Studio browser surface external; it does **not** try to embed Studio inside opencode.
+- if `/studio` gets sent to the model as ordinary text instead of opening Studio, the plugin likely did not load; rebuild/restart opencode and try again.
 
 ## Optional flags
 
