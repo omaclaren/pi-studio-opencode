@@ -187,6 +187,25 @@ section {
   box-shadow: var(--panel-shadow);
 }
 
+section.pane-active {
+  border-color: var(--border);
+}
+
+body.pane-focus-left main,
+body.pane-focus-right main {
+  grid-template-columns: 1fr;
+}
+
+body.pane-focus-left #rightPane,
+body.pane-focus-right #leftPane {
+  display: none;
+}
+
+body.pane-focus-left #leftPane,
+body.pane-focus-right #rightPane {
+  border-color: var(--border);
+}
+
 .section-header {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-muted);
@@ -218,6 +237,20 @@ section {
   padding: 6px 9px;
   font-size: 12px;
   border-radius: 7px;
+}
+
+.pane-focus-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+}
+
+button.pane-focus-btn.is-active:not(:disabled):hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  filter: brightness(0.95);
 }
 
 .section-header select {

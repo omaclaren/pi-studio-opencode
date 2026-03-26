@@ -8,6 +8,8 @@ const state = {
   snapshot: null,
   stableCurrentModel: null,
   selectedPromptId: null,
+  activePane: "left",
+  paneFocusTarget: "off",
   busy: false,
   followLatest: true,
   diagnosticsOpen: false,
@@ -84,6 +86,10 @@ const HIGHLIGHTED_LANGUAGES = ["markdown", "javascript", "typescript", "python",
 const SUPPORTED_LANGUAGES = Object.keys(LANG_EXT_MAP);
 
 const elements = {
+  leftPane: document.getElementById("leftPane"),
+  rightPane: document.getElementById("rightPane"),
+  leftFocusBtn: document.getElementById("leftFocusBtn"),
+  rightFocusBtn: document.getElementById("rightFocusBtn"),
   saveAsBtn: document.getElementById("saveAsBtn"),
   saveBtn: document.getElementById("saveBtn"),
   loadFileBtn: document.getElementById("loadFileBtn"),
@@ -2795,10 +2801,84 @@ function handleFollowLatestChange() {
   render();
 }
 
+function updatePaneFocusButtons() {
+  [
+    [elements.leftFocusBtn, "left"],
+    [elements.rightFocusBtn, "right"],
+  ].forEach(([btn, pane]) => {
+    if (!btn) return;
+    const isFocusedPane = state.paneFocusTarget === pane;
+    const paneName = pane === "right" ? "response" : "editor";
+    btn.classList.toggle("is-active", isFocusedPane);
+    btn.setAttribute("aria-pressed", isFocusedPane ? "true" : "false");
+    btn.textContent = isFocusedPane ? "Exit focus" : "Focus pane";
+    btn.title = isFocusedPane
+      ? "Return to the two-pane layout. Shortcut: F10 or Cmd/Ctrl+Esc."
+      : `Show only the ${paneName} pane. Shortcut: F10 or Cmd/Ctrl+Esc.`;
+  });
+}
+
+function applyPaneFocusClasses() {
+  document.body.classList.remove("pane-focus-left", "pane-focus-right");
+  if (state.paneFocusTarget === "left") {
+    document.body.classList.add("pane-focus-left");
+  } else if (state.paneFocusTarget === "right") {
+    document.body.classList.add("pane-focus-right");
+  }
+  updatePaneFocusButtons();
+}
+
+function setActivePane(nextPane) {
+  state.activePane = nextPane === "right" ? "right" : "left";
+  if (elements.leftPane) elements.leftPane.classList.toggle("pane-active", state.activePane === "left");
+  if (elements.rightPane) elements.rightPane.classList.toggle("pane-active", state.activePane === "right");
+  if (state.paneFocusTarget !== "off" && state.paneFocusTarget !== state.activePane) {
+    state.paneFocusTarget = state.activePane;
+    applyPaneFocusClasses();
+  }
+}
+
+function paneLabel(pane) {
+  return pane === "right" ? "Response" : "Editor";
+}
+
+function enterPaneFocus(nextPane) {
+  const pane = nextPane === "right" ? "right" : "left";
+  setActivePane(pane);
+  state.paneFocusTarget = pane;
+  applyPaneFocusClasses();
+  setTransientStatus(`Focus mode: ${paneLabel(pane)} pane.`, "success", 1500);
+}
+
+function togglePaneFocus() {
+  if (state.paneFocusTarget === state.activePane) {
+    state.paneFocusTarget = "off";
+    applyPaneFocusClasses();
+    setTransientStatus("Focus mode off.", "success", 1200);
+    return;
+  }
+  enterPaneFocus(state.activePane);
+}
+
+function exitPaneFocus() {
+  if (state.paneFocusTarget === "off") return false;
+  state.paneFocusTarget = "off";
+  applyPaneFocusClasses();
+  setTransientStatus("Focus mode off.", "success", 1200);
+  return true;
+}
+
 function handleGlobalShortcuts(event) {
   if (event.defaultPrevented || event.isComposing) return;
   const metaEnter = (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key === "Enter";
-  const plainEscape = !event.metaKey && !event.ctrlKey && !event.altKey && event.key === "Escape";
+  const plainEscape = !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key === "Escape";
+  const togglePaneShortcut = ((event.metaKey || event.ctrlKey) && event.key === "Escape") || event.key === "F10";
+
+  if (togglePaneShortcut) {
+    event.preventDefault();
+    togglePaneFocus();
+    return;
+  }
 
   if (metaEnter) {
     event.preventDefault();
@@ -2815,6 +2895,11 @@ function handleGlobalShortcuts(event) {
   if (plainEscape && state.snapshot?.state?.runState === "running" && !elements.runBtn.disabled) {
     event.preventDefault();
     void runOrStop();
+    return;
+  }
+
+  if (plainEscape && exitPaneFocus()) {
+    event.preventDefault();
   }
 }
 
@@ -2887,6 +2972,32 @@ function wireEvents() {
       render();
     });
   }
+  if (elements.leftPane) {
+    elements.leftPane.addEventListener("mousedown", () => setActivePane("left"));
+    elements.leftPane.addEventListener("focusin", () => setActivePane("left"));
+  }
+  if (elements.rightPane) {
+    elements.rightPane.addEventListener("mousedown", () => setActivePane("right"));
+    elements.rightPane.addEventListener("focusin", () => setActivePane("right"));
+  }
+  if (elements.leftFocusBtn) {
+    elements.leftFocusBtn.addEventListener("click", () => {
+      if (state.paneFocusTarget === "left") {
+        exitPaneFocus();
+        return;
+      }
+      enterPaneFocus("left");
+    });
+  }
+  if (elements.rightFocusBtn) {
+    elements.rightFocusBtn.addEventListener("click", () => {
+      if (state.paneFocusTarget === "right") {
+        exitPaneFocus();
+        return;
+      }
+      enterPaneFocus("right");
+    });
+  }
   elements.historyPrevBtn.addEventListener("click", () => handleHistoryPrev());
   elements.historyNextBtn.addEventListener("click", () => handleHistoryNext());
   elements.historyLastBtn.addEventListener("click", () => handleHistoryLast());
@@ -2909,6 +3020,8 @@ async function main() {
   setEditorLanguage(readStoredEditorLanguage() || state.editorLanguage);
   setAnnotationsEnabled(readStoredToggle(ANNOTATION_MODE_STORAGE_KEY) ?? true);
   setEditorHighlightEnabled(readStoredToggle(EDITOR_HIGHLIGHT_STORAGE_KEY) ?? true);
+  setActivePane("left");
+  applyPaneFocusClasses();
   wireEvents();
   await fetchSnapshot();
   restartSnapshotPolling();
