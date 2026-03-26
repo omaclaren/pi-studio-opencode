@@ -78,6 +78,7 @@ export type ObservedSessionMessage = {
   completed?: number;
   error?: string;
   text: string;
+  parentMessageId?: string | null;
 };
 
 type NormalizedMessage = ObservedSessionMessage;
@@ -87,6 +88,7 @@ export type ObservedExternalResponse = {
   promptText: string;
   submittedAt: number;
   response: ObservedSessionMessage;
+  consumedAssistantMessageIds: string[];
 };
 
 type StartedServer = {
@@ -105,6 +107,9 @@ function normalizeMessage(record: SessionMessageRecord): NormalizedMessage {
     .map((part) => part.text)
     .join("\n\n")
     .trim();
+  const parentMessageId = typeof (record.info as { parentID?: unknown }).parentID === "string"
+    ? (record.info as { parentID: string }).parentID
+    : undefined;
 
   return {
     id: record.info.id,
@@ -115,7 +120,69 @@ function normalizeMessage(record: SessionMessageRecord): NormalizedMessage {
       ? `${record.info.error.name}: ${record.info.error.data.message ?? "unknown error"}`
       : undefined,
     text,
+    parentMessageId,
   };
+}
+
+function compareObservedMessages(a: ObservedSessionMessage, b: ObservedSessionMessage): number {
+  if (a.created !== b.created) return a.created - b.created;
+  if (a.completed !== b.completed) return (a.completed ?? a.created) - (b.completed ?? b.created);
+  if (a.role === b.role) return a.id.localeCompare(b.id);
+  return a.role === "user" ? -1 : 1;
+}
+
+function sortObservedMessages(messages: ReadonlyArray<ObservedSessionMessage>): ObservedSessionMessage[] {
+  return [...messages].sort(compareObservedMessages);
+}
+
+function hasObservedAssistantContent(message: ObservedSessionMessage): boolean {
+  return message.role === "assistant" && Boolean(message.text || message.error);
+}
+
+function resolveObservedRootUserMessage(
+  message: ObservedSessionMessage,
+  messageById: ReadonlyMap<string, ObservedSessionMessage>,
+): ObservedSessionMessage | null {
+  if (message.role === "user") return message;
+
+  const visited = new Set<string>();
+  let parentMessageId = message.parentMessageId ?? null;
+  while (parentMessageId && !visited.has(parentMessageId)) {
+    visited.add(parentMessageId);
+    const parent = messageById.get(parentMessageId);
+    if (!parent) return null;
+    if (parent.role === "user") return parent;
+    parentMessageId = parent.parentMessageId ?? null;
+  }
+
+  return null;
+}
+
+function selectLatestObservedAssistantResponse(
+  messages: ReadonlyArray<ObservedSessionMessage>,
+): ObservedSessionMessage | null {
+  const ordered = sortObservedMessages(messages);
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    const candidate = ordered[i];
+    if (candidate && hasObservedAssistantContent(candidate)) {
+      return candidate;
+    }
+  }
+  return ordered[ordered.length - 1] ?? null;
+}
+
+function collectObservedAssistantResponsesForUser(
+  messages: ReadonlyArray<ObservedSessionMessage>,
+  matchedAssistantIds: ReadonlySet<string>,
+  userMessageId: string,
+): ObservedSessionMessage[] {
+  const ordered = sortObservedMessages(messages);
+  const messageById = new Map(ordered.map((message) => [message.id, message]));
+  return ordered.filter((message) => (
+    message.role === "assistant"
+    && !matchedAssistantIds.has(message.id)
+    && resolveObservedRootUserMessage(message, messageById)?.id === userMessageId
+  ));
 }
 
 function eventSessionId(event: Event): string | null {
@@ -169,14 +236,17 @@ export function collectObservedExternalResponses(
   messages: ReadonlyArray<ObservedSessionMessage>,
   matchedAssistantIds: ReadonlySet<string>,
 ): ObservedExternalResponse[] {
-  const ordered = [...messages].sort((a, b) => {
-    if (a.created !== b.created) return a.created - b.created;
-    if (a.role === b.role) return a.id.localeCompare(b.id);
-    return a.role === "user" ? -1 : 1;
-  });
-
-  const observed: ObservedExternalResponse[] = [];
+  const ordered = sortObservedMessages(messages);
+  const messageById = new Map(ordered.map((message) => [message.id, message]));
+  const grouped = new Map<string, {
+    order: number;
+    userMessageId: string | null;
+    promptText: string;
+    submittedAt: number;
+    assistants: ObservedSessionMessage[];
+  }>();
   let latestUser: ObservedSessionMessage | null = null;
+  let nextOrder = 0;
 
   for (const message of ordered) {
     if (message.role === "user") {
@@ -185,17 +255,39 @@ export function collectObservedExternalResponses(
     }
     if (message.role !== "assistant") continue;
     if (matchedAssistantIds.has(message.id)) continue;
-    if (!message.text && !message.error) continue;
+    if (!hasObservedAssistantContent(message)) continue;
 
-    observed.push({
-      userMessageId: latestUser?.id ?? null,
-      promptText: latestUser?.text ?? "",
-      submittedAt: latestUser?.created ?? message.created,
-      response: message,
-    });
+    const rootedUser = resolveObservedRootUserMessage(message, messageById);
+    const observedUser = rootedUser ?? latestUser;
+    const key = observedUser?.id ? `user:${observedUser.id}` : `orphan:${message.id}`;
+    let group = grouped.get(key);
+    if (!group) {
+      group = {
+        order: nextOrder++,
+        userMessageId: observedUser?.id ?? null,
+        promptText: observedUser?.text ?? "",
+        submittedAt: observedUser?.created ?? message.created,
+        assistants: [],
+      };
+      grouped.set(key, group);
+    }
+    group.assistants.push(message);
   }
 
-  return observed;
+  return [...grouped.values()]
+    .sort((a, b) => a.order - b.order)
+    .map((group) => {
+      const response = selectLatestObservedAssistantResponse(group.assistants);
+      if (!response) return null;
+      return {
+        userMessageId: group.userMessageId,
+        promptText: group.promptText,
+        submittedAt: group.submittedAt,
+        response,
+        consumedAssistantMessageIds: group.assistants.map((assistant) => assistant.id),
+      } satisfies ObservedExternalResponse;
+    })
+    .filter((value): value is ObservedExternalResponse => Boolean(value));
 }
 
 function isMessagePartDeltaEvent(event: { type?: string; properties?: unknown }): event is {
@@ -529,7 +621,11 @@ export class OpencodeStudioHost implements StudioHost {
   private async finalizeActiveSubmission(active: StudioHostHistoryItem): Promise<void> {
     const bound = await this.bindSubmissionToMessages(active);
     if (bound.userMessageId) {
+      this.matchedUserIds.add(bound.userMessageId);
       this.core.noteUserMessage({ text: active.promptText, messageId: bound.userMessageId });
+    }
+    for (const assistantMessageId of bound.consumedAssistantMessageIds) {
+      this.matchedAssistantIds.add(assistantMessageId);
     }
     const stopping = this.core.getState().runState === "stopping";
     const completed = this.core.completeActiveResponse({
@@ -547,10 +643,12 @@ export class OpencodeStudioHost implements StudioHost {
   private async bindSubmissionToMessages(active: StudioHostHistoryItem): Promise<{
     userMessageId: string | null;
     response: NormalizedMessage | null;
+    consumedAssistantMessageIds: string[];
   }> {
     const deadline = Date.now() + 4000;
     let userMessageId: string | null = active.userMessageId ?? null;
     let response: NormalizedMessage | null = null;
+    let consumedAssistantMessageIds: string[] = [];
 
     while (Date.now() < deadline) {
       const messages = (await this.fetchSessionMessages())
@@ -566,32 +664,39 @@ export class OpencodeStudioHost implements StudioHost {
         ));
         if (userMatch) {
           userMessageId = userMatch.id;
-          this.matchedUserIds.add(userMatch.id);
         }
       }
 
-      if (!response) {
-        const assistantCandidates = [...messages].reverse().filter((message) => (
+      let responseCandidate: NormalizedMessage | null = null;
+      let consumedCandidateIds: string[] = [];
+
+      if (userMessageId) {
+        const linkedAssistantMessages = collectObservedAssistantResponsesForUser(messages, this.matchedAssistantIds, userMessageId);
+        responseCandidate = selectLatestObservedAssistantResponse(linkedAssistantMessages);
+        consumedCandidateIds = linkedAssistantMessages.map((message) => message.id);
+      } else {
+        const assistantCandidates = sortObservedMessages(messages).filter((message) => (
           message.role === "assistant"
           && !this.matchedAssistantIds.has(message.id)
           && message.created >= active.submittedAt - 10_000
         ));
-        const assistantMatch = assistantCandidates.find((message) => Boolean(message.text || message.error))
-          ?? assistantCandidates[0];
-        if (assistantMatch) {
-          response = assistantMatch;
-          this.matchedAssistantIds.add(assistantMatch.id);
-        }
+        responseCandidate = selectLatestObservedAssistantResponse(assistantCandidates);
+        consumedCandidateIds = assistantCandidates.map((message) => message.id);
       }
 
-      if (userMessageId && response) {
-        return { userMessageId, response };
+      if (responseCandidate) {
+        response = responseCandidate;
+        consumedAssistantMessageIds = consumedCandidateIds;
+      }
+
+      if (userMessageId && responseCandidate) {
+        return { userMessageId, response: responseCandidate, consumedAssistantMessageIds: consumedCandidateIds };
       }
 
       await sleep(150);
     }
 
-    return { userMessageId, response };
+    return { userMessageId, response, consumedAssistantMessageIds };
   }
 
   private async reconcileObservedExternalResponses(): Promise<StudioHostHistoryItem[]> {
@@ -609,7 +714,9 @@ export class OpencodeStudioHost implements StudioHost {
       if (item.userMessageId) {
         this.matchedUserIds.add(item.userMessageId);
       }
-      this.matchedAssistantIds.add(item.response.id);
+      for (const assistantMessageId of item.consumedAssistantMessageIds) {
+        this.matchedAssistantIds.add(assistantMessageId);
+      }
       adopted.push(this.core.recordObservedResponse({
         promptText: item.promptText,
         userMessageId: item.userMessageId,
