@@ -7,6 +7,7 @@ import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createOpencodeStudioHost, type OpencodeStudioHostTelemetryEvent } from "./host-opencode.js";
+import { renderPrototypePdfWithPandoc, sanitizePrototypePdfFilename, PROTOTYPE_PDF_EXPORT_MAX_CHARS } from "./prototype-pdf.js";
 import { buildPrototypeThemeStylesheet, readPrototypeThemeDescriptor, type PrototypeThemeDescriptor } from "./prototype-theme.js";
 import type { StudioHostCapabilities, StudioHostHistoryItem, StudioHostState } from "./studio-host-types.js";
 
@@ -282,6 +283,27 @@ function sendText(response: ServerResponse, statusCode: number, body: string, co
   response.statusCode = statusCode;
   response.setHeader("Content-Type", contentType);
   response.end(body);
+}
+
+function buildAttachmentContentDisposition(filename: string): string {
+  const fallbackName = filename.replace(/[^ -]+/g, "_").replace(/["\\]/g, "_") || "studio-preview.pdf";
+  return `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+function sendBinary(
+  response: ServerResponse,
+  statusCode: number,
+  content: Buffer,
+  contentType: string,
+  extraHeaders: Record<string, string> = {},
+): void {
+  response.statusCode = statusCode;
+  response.setHeader("Content-Type", contentType);
+  response.setHeader("Content-Length", String(content.length));
+  for (const [key, value] of Object.entries(extraHeaders)) {
+    response.setHeader(key, value);
+  }
+  response.end(content);
 }
 
 function contentTypeForPath(pathname: string): string {
@@ -989,6 +1011,47 @@ export async function startPrototypeServer(options: PrototypeServerOptions): Pro
         const resourcePath = resolvePrototypeBaseDir(sourcePath || undefined, resourceDir || undefined, options.directory);
         const html = await renderPrototypeMarkdownWithPandoc(markdown, resourcePath);
         sendJson(response, 200, { ok: true, html, renderer: "pandoc" });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/export-pdf") {
+        const payload = await readJsonBody<{
+          markdown?: string;
+          sourcePath?: string;
+          resourceDir?: string;
+          isLatex?: boolean;
+          editorPdfLanguage?: string;
+          filenameHint?: string;
+        }>(request);
+        const markdown = typeof payload.markdown === "string" ? payload.markdown : "";
+        if (markdown.length > PROTOTYPE_PDF_EXPORT_MAX_CHARS) {
+          sendJson(response, 413, { error: `PDF export text exceeds ${PROTOTYPE_PDF_EXPORT_MAX_CHARS} characters.` });
+          return;
+        }
+        if (Buffer.byteLength(markdown, "utf8") > REQUEST_BODY_MAX_BYTES) {
+          sendJson(response, 413, { error: `PDF export text exceeds ${REQUEST_BODY_MAX_BYTES} bytes.` });
+          return;
+        }
+        const sourcePath = typeof payload.sourcePath === "string" ? payload.sourcePath : "";
+        const resourceDir = typeof payload.resourceDir === "string" ? payload.resourceDir : "";
+        const resourcePath = resolvePrototypeBaseDir(sourcePath || undefined, resourceDir || undefined, options.directory);
+        const requestedEditorPdfLanguage = typeof payload.editorPdfLanguage === "string" ? payload.editorPdfLanguage : "";
+        const requestedIsLatex = payload.isLatex === true;
+        const requestedFilename = typeof payload.filenameHint === "string" ? payload.filenameHint : "";
+        const filename = sanitizePrototypePdfFilename(requestedFilename || (requestedIsLatex ? "studio-latex-preview.pdf" : "studio-preview.pdf"));
+        const { pdf, warning } = await renderPrototypePdfWithPandoc(markdown, {
+          isLatex: requestedIsLatex,
+          resourcePath,
+          editorPdfLanguage: requestedEditorPdfLanguage,
+        });
+        const headers: Record<string, string> = {
+          "Cache-Control": "no-store",
+          "Content-Disposition": buildAttachmentContentDisposition(filename),
+        };
+        if (warning) {
+          headers["X-PI-STUDIO-EXPORT-WARNING"] = warning;
+        }
+        sendBinary(response, 200, pdf, "application/pdf", headers);
         return;
       }
 

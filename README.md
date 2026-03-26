@@ -9,6 +9,7 @@ Current prototype support includes:
 - response and editor preview with math fallback
 - file load/save, working-dir-based preview resolution, and editor syntax highlighting
 - `.qmd`/Markdown preview improvements including targeted HTML comment stripping, preview page-break markers, Quarto-style callouts, `fig-align`, and local PDF figure preview via `pdf.js`
+- PDF export of the current right-pane preview via pandoc + xelatex
 
 Full parity with `pi-studio` is still in progress.
 
@@ -259,6 +260,7 @@ The browser prototype is still intentionally lightweight, but it now covers a la
   - **Response (Raw)**
   - **Response (Preview)** via pandoc HTML
   - **Editor (Preview)** via the same pandoc preview path
+  - **Export right preview as PDF** via pandoc + xelatex
 - preview/math behavior including:
   - preserved multiline matrix-style display math
   - selective MathJax fallback for pandoc-unsupported math
@@ -281,7 +283,7 @@ The browser prototype is still intentionally lightweight, but it now covers a la
 - selectable raw prompt vs effective prompt reload into the composer
 - recent host event log
 
-It is still deliberately narrower than full `pi-studio` (for example PDF export, annotation workflow, and Pi-specific editor integration are not ported), but it is now meant to be genuinely human-testable rather than just a queue/history spike.
+It is still deliberately narrower than full `pi-studio` (for example some deeper annotation workflow details and Pi-specific editor integration are not ported), but it is now meant to be genuinely human-testable rather than just a queue/history spike.
 
 ### opencode adapter
 

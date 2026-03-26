@@ -30,6 +30,7 @@ const state = {
   lastResponseIdentityKey: "",
   snapshotPollTimer: null,
   snapshotPollInFlight: false,
+  pdfExportInProgress: false,
 };
 
 const MATHJAX_CDN_URL = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js";
@@ -118,6 +119,7 @@ const elements = {
   loadResponseBtn: document.getElementById("loadResponseBtn"),
   loadHistoryPromptBtn: document.getElementById("loadHistoryPromptBtn"),
   copyResponseBtn: document.getElementById("copyResponseBtn"),
+  exportPdfBtn: document.getElementById("exportPdfBtn"),
   diagnosticsPanel: document.getElementById("diagnosticsPanel"),
   activeTurnPanel: document.getElementById("activeTurnPanel"),
   lastTurnPanel: document.getElementById("lastTurnPanel"),
@@ -1219,6 +1221,27 @@ async function renderMarkdownWithPandoc(markdown) {
   return payload.html;
 }
 
+function parseContentDispositionFilename(headerValue) {
+  if (!headerValue || typeof headerValue !== "string") return "";
+
+  const utfMatch = headerValue.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utfMatch && utfMatch[1]) {
+    try {
+      return decodeURIComponent(utfMatch[1].trim());
+    } catch {
+      return utfMatch[1].trim();
+    }
+  }
+
+  const quotedMatch = headerValue.match(/filename="([^"]+)"/i);
+  if (quotedMatch && quotedMatch[1]) return quotedMatch[1].trim();
+
+  const plainMatch = headerValue.match(/filename=([^;]+)/i);
+  if (plainMatch && plainMatch[1]) return plainMatch[1].trim();
+
+  return "";
+}
+
 function hasAnnotationMarkers(text) {
   const source = String(text || "");
   ANNOTATION_MARKER_REGEX.lastIndex = 0;
@@ -1337,6 +1360,43 @@ function getPreviewSource() {
     key: `preview\u0000${display.kind}\u0000${responseId}\u0000${previewMarkdown}\u0000${display.previewWarning || ""}`,
     referenceLabel: getResponseReferenceLabel(display),
     previewWarning: display.previewWarning || "",
+  };
+}
+
+function getPdfExportSource() {
+  if (state.rightView !== "preview" && state.rightView !== "editor-preview") {
+    return null;
+  }
+
+  const previewSource = getPreviewSource();
+  const markdown = String(previewSource?.markdown || "");
+  if (!normalizedText(markdown)) {
+    return null;
+  }
+
+  const sourcePath = state.sourcePath || "";
+  const resourceDir = (!sourcePath && state.workingDir) ? state.workingDir : "";
+  const editorPdfLanguage = state.rightView === "editor-preview" ? String(state.editorLanguage || "") : "";
+  const isLatex = state.rightView === "editor-preview"
+    ? editorPdfLanguage === "latex"
+    : /\\documentclass\b|\\begin\{document\}/.test(markdown);
+
+  let filenameHint = state.rightView === "editor-preview"
+    ? "studio-editor-preview.pdf"
+    : "studio-response-preview.pdf";
+  if (sourcePath) {
+    const baseName = sourcePath.split(/[\\/]/).pop() || "studio";
+    const stem = baseName.replace(/\.[^.]+$/, "") || "studio";
+    filenameHint = `${stem}-preview.pdf`;
+  }
+
+  return {
+    markdown,
+    sourcePath,
+    resourceDir,
+    editorPdfLanguage,
+    isLatex,
+    filenameHint,
   };
 }
 
@@ -1996,6 +2056,21 @@ function updateActionState() {
   }
 
   elements.copyResponseBtn.disabled = !displayedResponseText;
+
+  if (elements.exportPdfBtn) {
+    const exportSource = getPdfExportSource();
+    const canExportPdf = Boolean(exportSource && normalizedText(exportSource.markdown));
+    elements.exportPdfBtn.disabled = state.pdfExportInProgress || !canExportPdf;
+    if (state.rightView === "markdown") {
+      elements.exportPdfBtn.title = "Switch right pane to Response (Preview) or Editor (Preview) to export PDF.";
+    } else if (!canExportPdf) {
+      elements.exportPdfBtn.title = "Nothing to export yet.";
+    } else if (state.pdfExportInProgress) {
+      elements.exportPdfBtn.title = "Exporting the current right-pane preview as PDF…";
+    } else {
+      elements.exportPdfBtn.title = "Export the current right-pane preview as PDF via pandoc + xelatex.";
+    }
+  }
 }
 
 function render() {
@@ -2296,6 +2371,79 @@ function chooseWorkingDir() {
   setTransientStatus(trimmed ? `Working dir set to ${trimmed}.` : "Working dir cleared.", "success");
 }
 
+async function exportRightPanePdf() {
+  if (state.pdfExportInProgress) {
+    setTransientStatus("PDF export is already in progress.", "warning");
+    return;
+  }
+
+  const exportSource = getPdfExportSource();
+  if (!exportSource) {
+    setTransientStatus("Switch right pane to Response (Preview) or Editor (Preview) before exporting PDF.", "warning");
+    return;
+  }
+
+  state.pdfExportInProgress = true;
+  render();
+  setTransientStatus("Exporting PDF…", "", 30_000);
+
+  try {
+    const response = await fetch(buildAuthenticatedPath("/api/export-pdf"), {
+      method: "POST",
+      headers: buildAuthenticatedHeaders({
+        "Content-Type": "application/json",
+      }),
+      body: JSON.stringify(exportSource),
+    });
+
+    if (!response.ok) {
+      const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+      let message = `PDF export failed with HTTP ${response.status}.`;
+      if (contentType.includes("application/json")) {
+        const payload = await response.json().catch(() => null);
+        if (payload && typeof payload.error === "string") {
+          message = payload.error;
+        }
+      } else {
+        const text = await response.text().catch(() => "");
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      }
+      throw new Error(message);
+    }
+
+    const warning = String(response.headers.get("x-pi-studio-export-warning") || "").trim();
+    const headerFilename = parseContentDispositionFilename(response.headers.get("content-disposition"));
+    let downloadName = headerFilename || exportSource.filenameHint || "studio-preview.pdf";
+    if (!/\.pdf$/i.test(downloadName)) {
+      downloadName += ".pdf";
+    }
+
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = downloadName;
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+
+    if (warning) {
+      setTransientStatus(`Exported PDF with warning: ${warning}`, "warning", 5000);
+    } else {
+      setTransientStatus(`Exported PDF: ${downloadName}`, "success", 3200);
+    }
+  } catch (error) {
+    setTransientStatus(error instanceof Error ? error.message : String(error), "error", 5000);
+  } finally {
+    state.pdfExportInProgress = false;
+    render();
+  }
+}
+
 async function copyText(text, successMessage) {
   await navigator.clipboard.writeText(text);
   setTransientStatus(successMessage, "success");
@@ -2558,6 +2706,9 @@ function wireEvents() {
   elements.loadResponseBtn.addEventListener("click", () => loadSelectedResponse());
   elements.loadHistoryPromptBtn.addEventListener("click", () => loadSelectedPrompt());
   elements.copyResponseBtn.addEventListener("click", () => void copySelectedResponse());
+  if (elements.exportPdfBtn) {
+    elements.exportPdfBtn.addEventListener("click", () => void exportRightPanePdf());
+  }
   elements.promptInput.addEventListener("input", () => handlePromptInputChange());
   elements.promptInput.addEventListener("scroll", () => syncEditorHighlightScroll());
   elements.promptInput.addEventListener("keyup", () => syncEditorHighlightScroll());
