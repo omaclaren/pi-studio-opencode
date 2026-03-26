@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { openBrowserUrl } from "./open-browser.js";
 import { startPrototypeServer, type PrototypeServerOptions } from "./prototype-server.js";
 
 type LauncherOptions = PrototypeServerOptions & {
@@ -80,35 +80,6 @@ Options:
   --no-open             Start Studio without opening a browser automatically
 `);
   process.exit(0);
-}
-
-export async function openBrowserUrl(url: string): Promise<void> {
-  await new Promise<void>((resolveOpen, rejectOpen) => {
-    let command = "";
-    let args: string[] = [];
-
-    if (process.platform === "darwin") {
-      command = "open";
-      args = [url];
-    } else if (process.platform === "win32") {
-      command = "cmd";
-      args = ["/c", "start", "", url];
-    } else {
-      command = "xdg-open";
-      args = [url];
-    }
-
-    const child = spawn(command, args, {
-      detached: true,
-      stdio: "ignore",
-    });
-
-    child.once("error", rejectOpen);
-    child.once("spawn", () => {
-      child.unref();
-      resolveOpen();
-    });
-  });
 }
 
 async function main(): Promise<void> {

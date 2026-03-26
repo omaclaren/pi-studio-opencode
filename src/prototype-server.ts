@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createOpencodeStudioHost, type OpencodeStudioHostTelemetryEvent } from "./host-opencode.js";
 import { renderPrototypePdfWithPandoc, sanitizePrototypePdfFilename, PROTOTYPE_PDF_EXPORT_MAX_CHARS } from "./prototype-pdf.js";
 import { buildPrototypeThemeStylesheet, readPrototypeThemeDescriptor, type PrototypeThemeDescriptor } from "./prototype-theme.js";
-import type { StudioHostCapabilities, StudioHostHistoryItem, StudioHostState } from "./studio-host-types.js";
+import type { StudioHost, StudioHostCapabilities, StudioHostHistoryItem, StudioHostState } from "./studio-host-types.js";
 
 export type PrototypeServerOptions = {
   directory: string;
@@ -18,6 +18,7 @@ export type PrototypeServerOptions = {
   title?: string;
   host: string;
   port: number;
+  consoleLogs?: boolean;
 };
 
 type PrototypeTurnSnapshot = {
@@ -85,6 +86,12 @@ export type PrototypeServerInstance = {
   getState(): StudioHostState;
   stop(): Promise<void>;
 };
+
+export type PrototypeServerHostFactory = (input: {
+  options: PrototypeServerOptions;
+  eventLogger: (line: string) => void;
+  telemetryListener: (event: OpencodeStudioHostTelemetryEvent) => void;
+}) => Promise<StudioHost>;
 
 const STATIC_DIR = resolve(fileURLToPath(new URL("../static", import.meta.url)));
 const MAX_LOG_LINES = 200;
@@ -286,7 +293,7 @@ function sendText(response: ServerResponse, statusCode: number, body: string, co
 }
 
 function buildAttachmentContentDisposition(filename: string): string {
-  const fallbackName = filename.replace(/[^ -]+/g, "_").replace(/["\\]/g, "_") || "studio-preview.pdf";
+  const fallbackName = filename.replace(/[^\x00-\x7f]+/g, "_").replace(/["\\]/g, "_") || "studio-preview.pdf";
   return `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
@@ -768,7 +775,10 @@ async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?
   });
 }
 
-export async function startPrototypeServer(options: PrototypeServerOptions): Promise<PrototypeServerInstance> {
+export async function startPrototypeServer(
+  options: PrototypeServerOptions,
+  hostFactory?: PrototypeServerHostFactory,
+): Promise<PrototypeServerInstance> {
   const serverStartedAt = Date.now();
   const accessToken = createPrototypeAccessToken();
   const theme = await readPrototypeThemeDescriptor();
@@ -885,18 +895,28 @@ export async function startPrototypeServer(options: PrototypeServerOptions): Pro
     }
   };
 
-  const host = await createOpencodeStudioHost({
-    directory: options.directory,
-    baseUrl: options.baseUrl,
-    sessionId: options.sessionId,
-    title: options.title,
-    eventLogger: (line) => {
-      logLines.push({ at: Date.now(), line });
-      if (logLines.length > MAX_LOG_LINES) {
-        logLines.splice(0, logLines.length - MAX_LOG_LINES);
-      }
+  const eventLogger = (line: string): void => {
+    logLines.push({ at: Date.now(), line });
+    if (logLines.length > MAX_LOG_LINES) {
+      logLines.splice(0, logLines.length - MAX_LOG_LINES);
+    }
+    if (options.consoleLogs !== false) {
       console.log(line);
-    },
+    }
+  };
+
+  const host = await (hostFactory ?? (async ({ options: hostOptions, eventLogger, telemetryListener }) => {
+    return await createOpencodeStudioHost({
+      directory: hostOptions.directory,
+      baseUrl: hostOptions.baseUrl,
+      sessionId: hostOptions.sessionId,
+      title: hostOptions.title,
+      eventLogger,
+      telemetryListener,
+    });
+  }))({
+    options,
+    eventLogger,
     telemetryListener: handleTelemetry,
   });
 

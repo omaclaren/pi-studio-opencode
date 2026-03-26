@@ -1,9 +1,14 @@
-import { spawn, type StdioOptions } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, openSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import type { Config, Part } from "@opencode-ai/sdk";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import type { Config, Event, Part } from "@opencode-ai/sdk";
 import type { Plugin } from "@opencode-ai/plugin";
+import { createPluginBackedOpencodeStudioHost, type PluginBackedOpencodeStudioHost } from "./host-opencode-plugin.js";
+import { openBrowserUrl } from "./open-browser.js";
+import {
+  startPrototypeServer,
+  type PrototypeServerInstance,
+  type PrototypeServerOptions,
+} from "./prototype-server.js";
 
 const STUDIO_COMMAND_NAME = "studio";
 const CANCEL_LAUNCH_MESSAGE = "PI_STUDIO_OPENCODE_COMMAND_HANDLED";
@@ -11,16 +16,17 @@ const COMMAND_DESCRIPTION = "Open π Studio attached to the current opencode ses
 const COMMAND_TEMPLATE = "Open π Studio for this active opencode session.";
 const FORBIDDEN_LAUNCHER_FLAGS = new Set(["--base-url", "--session", "--directory"]);
 
-function getLauncherExecutable(): string {
-  const override = String(process.env.PI_STUDIO_OPENCODE_EXECUTABLE ?? "").trim();
-  if (override) return override;
-  return "node";
-}
+type PluginStudioLaunchOptions = Pick<PrototypeServerOptions, "host" | "port" | "title"> & {
+  openBrowser: boolean;
+};
 
-function getLauncherScriptPath(): string {
-  const currentFile = fileURLToPath(import.meta.url);
-  return resolve(dirname(currentFile), "launcher.js");
-}
+type ActiveStudioBridge = {
+  sessionId: string;
+  directory: string;
+  launchOptions: PluginStudioLaunchOptions;
+  host: PluginBackedOpencodeStudioHost;
+  instance: PrototypeServerInstance;
+};
 
 function tokenizeCommandArguments(input: string): string[] {
   const source = String(input ?? "").trim();
@@ -128,57 +134,188 @@ function clearCommandParts(parts: Part[]): void {
   parts.splice(0, parts.length);
 }
 
-function launchStudioBrowser(input: {
-  launcherArgs: string[];
-  directory: string;
-  baseUrl: string;
-  sessionId: string;
-}): void {
-  const launcherScriptPath = getLauncherScriptPath();
-  if (!existsSync(launcherScriptPath)) {
-    throw new Error(`Studio launcher was not found at ${launcherScriptPath}`);
+function parsePluginStudioLaunchArgs(args: string[]): PluginStudioLaunchOptions {
+  const options: PluginStudioLaunchOptions = {
+    host: "127.0.0.1",
+    port: 0,
+    openBrowser: true,
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    const next = args[i + 1];
+
+    if (arg === "--host" && next) {
+      options.host = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--port" && next) {
+      options.port = Number.parseInt(next, 10);
+      if (!Number.isFinite(options.port) || options.port < 0) {
+        throw new Error(`Invalid --port value: ${next}`);
+      }
+      i += 1;
+      continue;
+    }
+    if (arg === "--title" && next) {
+      options.title = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--no-open") {
+      options.openBrowser = false;
+      continue;
+    }
+    if (arg === "--help" || arg === "-h") {
+      throw new Error("/studio does not support --help yet. Supported flags: --host, --port, --title, --no-open");
+    }
+    throw new Error(`Unknown /studio argument: ${arg}`);
   }
 
-  const argv = [
-    launcherScriptPath,
-    "--directory",
-    input.directory,
-    "--base-url",
-    input.baseUrl,
-    "--session",
-    input.sessionId,
-    ...input.launcherArgs,
-  ];
+  return options;
+}
 
-  const logPath = getLauncherLogPathFromEnvironment();
-  let stdio: StdioOptions = "ignore";
-  if (logPath) {
-    mkdirSync(dirname(logPath), { recursive: true });
-    const fd = openSync(logPath, "a");
-    stdio = ["ignore", fd, fd];
+function sameLaunchOptions(a: PluginStudioLaunchOptions, b: PluginStudioLaunchOptions): boolean {
+  return a.host === b.host
+    && a.port === b.port
+    && (a.title ?? "") === (b.title ?? "");
+}
+
+class StudioBridgeManager {
+  private readonly bridges = new Map<string, ActiveStudioBridge>();
+  private cleanupInstalled = false;
+
+  constructor(private readonly ctx: Parameters<Plugin>[0]) {}
+
+  private installCleanup(): void {
+    if (this.cleanupInstalled) return;
+    this.cleanupInstalled = true;
+
+    process.once("exit", () => {
+      void this.stopAll();
+    });
   }
 
-  const executable = getLauncherExecutable();
-  appendLauncherLog(`spawn exec=${executable} argv=${JSON.stringify(argv)}`);
-  const child = spawn(executable, argv, {
-    cwd: input.directory,
-    detached: true,
-    stdio,
-    env: {
-      ...process.env,
-    },
-  });
+  async openStudio(input: {
+    sessionId: string;
+    directory: string;
+    launchOptions: PluginStudioLaunchOptions;
+  }): Promise<PrototypeServerInstance> {
+    this.installCleanup();
 
-  child.once("error", (error: Error) => {
-    appendLauncherLog(`spawn error: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  child.unref();
+    const existing = this.bridges.get(input.sessionId);
+    if (existing && existing.directory === input.directory && sameLaunchOptions(existing.launchOptions, input.launchOptions)) {
+      appendLauncherLog(`reuse session=${input.sessionId} url=${existing.instance.url}`);
+      await this.maybeOpenBrowser(existing.instance.url, input.launchOptions.openBrowser);
+      return existing.instance;
+    }
+
+    if (existing) {
+      await existing.instance.stop();
+      this.bridges.delete(input.sessionId);
+    }
+
+    let hostRef: PluginBackedOpencodeStudioHost | null = null;
+    const instance = await startPrototypeServer({
+      directory: input.directory,
+      sessionId: input.sessionId,
+      title: input.launchOptions.title,
+      host: input.launchOptions.host,
+      port: input.launchOptions.port,
+      consoleLogs: false,
+    }, async ({ options, eventLogger, telemetryListener }) => {
+      hostRef = await createPluginBackedOpencodeStudioHost({
+        client: this.ctx.client,
+        directory: options.directory,
+        sessionId: options.sessionId,
+        title: options.title,
+        eventLogger,
+        telemetryListener,
+      });
+      return hostRef;
+    });
+
+    if (!hostRef) {
+      await instance.stop();
+      throw new Error("Failed to initialize plugin-backed Studio host.");
+    }
+
+    const bridge: ActiveStudioBridge = {
+      sessionId: input.sessionId,
+      directory: input.directory,
+      launchOptions: { ...input.launchOptions },
+      host: hostRef,
+      instance,
+    };
+    this.bridges.set(input.sessionId, bridge);
+
+    appendLauncherLog(`bridge ready session=${input.sessionId} url=${instance.url}`);
+    await this.maybeOpenBrowser(instance.url, input.launchOptions.openBrowser);
+    return instance;
+  }
+
+  async handleEvent(event: Event): Promise<void> {
+    const active = [...this.bridges.values()];
+    if (active.length === 0) return;
+    await Promise.allSettled(active.map(async (bridge) => {
+      await bridge.host.ingestEvent(event);
+    }));
+  }
+
+  private async maybeOpenBrowser(url: string, openBrowser: boolean): Promise<void> {
+    if (!openBrowser) {
+      appendLauncherLog(`browser skipped url=${url}`);
+      await this.showToast(`π Studio ready: ${url}`, "info");
+      return;
+    }
+
+    try {
+      await openBrowserUrl(url);
+      appendLauncherLog(`browser opened url=${url}`);
+      await this.showToast("Opened π Studio in your browser.", "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendLauncherLog(`browser open failed url=${url} error=${message}`);
+      await this.showToast(`π Studio ready: ${url}`, "warning");
+    }
+  }
+
+  private async showToast(message: string, variant: "info" | "success" | "warning" | "error"): Promise<void> {
+    try {
+      await this.ctx.client.tui.showToast({
+        query: { directory: this.ctx.directory },
+        body: {
+          title: "π Studio",
+          message,
+          variant,
+          duration: 4500,
+        },
+        throwOnError: true,
+      });
+    } catch {
+      // ignore toast failures; the browser URL is still logged if logging is enabled
+    }
+  }
+
+  private async stopAll(): Promise<void> {
+    const active = [...this.bridges.values()];
+    this.bridges.clear();
+    await Promise.allSettled(active.map(async (bridge) => {
+      await bridge.instance.stop();
+    }));
+  }
 }
 
 export const PiStudioOpencodePlugin: Plugin = async (ctx) => {
+  const bridgeManager = new StudioBridgeManager(ctx);
+
   return {
     config: async (config) => {
       ensureStudioCommand(config);
+    },
+    event: async ({ event }) => {
+      await bridgeManager.handleEvent(event);
     },
     "command.execute.before": async (input, output) => {
       if (input.command !== STUDIO_COMMAND_NAME) {
@@ -186,15 +323,14 @@ export const PiStudioOpencodePlugin: Plugin = async (ctx) => {
       }
 
       clearCommandParts(output.parts);
-      const launcherArgs = [
+      const launchOptions = parsePluginStudioLaunchArgs([
         ...getExtraLauncherArgsFromEnvironment(),
         ...sanitizeLauncherArgs(tokenizeCommandArguments(input.arguments)),
-      ];
-      launchStudioBrowser({
-        launcherArgs,
-        directory: ctx.directory,
-        baseUrl: ctx.serverUrl.toString(),
+      ]);
+      await bridgeManager.openStudio({
         sessionId: input.sessionID,
+        directory: ctx.directory,
+        launchOptions,
       });
       throw new Error(CANCEL_LAUNCH_MESSAGE);
     },

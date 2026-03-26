@@ -1,310 +1,44 @@
-import { createOpencode, createOpencodeClient, type Event, type Message, type Part, type Session } from "@opencode-ai/sdk";
+import type { Event, Message, OpencodeClient, Part, Session } from "@opencode-ai/sdk";
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+  collectObservedAssistantResponsesForUser,
+  collectObservedExternalResponses,
+  eventSessionId,
+  extractAssistantPartText,
+  isMessagePartDeltaEvent,
+  normalizeSessionMessageRecord,
+  selectLatestObservedAssistantResponse,
+  sortObservedMessages,
+  summarizeEvent,
+  type ObservedSessionMessage,
+  type OpencodeStudioHostTelemetryEvent,
+} from "./host-opencode.js";
 import { StudioCore } from "./studio-core.js";
 import type { StudioHost, StudioHostCapabilities, StudioHostHistoryItem, StudioHostListener, StudioHostState } from "./studio-host-types.js";
 
-export type OpencodeStudioHostTelemetryEvent =
-  | {
-    type: "submission.dispatched";
-    at: number;
-    submission: StudioHostHistoryItem;
-  }
-  | {
-    type: "backend.status";
-    at: number;
-    status: string | null;
-  }
-  | {
-    type: "user.message.updated";
-    at: number;
-    messageId: string;
-    providerID?: string;
-    modelID?: string;
-    agent?: string;
-  }
-  | {
-    type: "assistant.message.updated";
-    at: number;
-    messageId: string;
-    providerID?: string;
-    modelID?: string;
-    agent?: string;
-  }
-  | {
-    type: "assistant.part.updated";
-    at: number;
-    messageId: string;
-    partId: string;
-    partType: string;
-    text?: string;
-  }
-  | {
-    type: "assistant.part.delta";
-    at: number;
-    messageId: string;
-    partId: string;
-    field: string;
-    delta: string;
-    partType?: string;
-  }
-  | {
-    type: "session.idle";
-    at: number;
-  }
-  | {
-    type: "submission.completed";
-    at: number;
-    historyItem: StudioHostHistoryItem;
-  };
+type SessionMessageRecord = {
+  info: Message;
+  parts: Part[];
+};
 
-export type OpencodeStudioHostOptions = {
+type NormalizedMessage = ObservedSessionMessage;
+
+export type PluginBackedOpencodeStudioHostOptions = {
+  client: OpencodeClient;
   directory: string;
-  baseUrl?: string;
   sessionId?: string;
   title?: string;
   eventLogger?: (line: string) => void;
   telemetryListener?: (event: OpencodeStudioHostTelemetryEvent) => void;
 };
 
-export type SessionMessageRecord = {
-  info: Message;
-  parts: Part[];
-};
-
-export type ObservedSessionMessage = {
-  id: string;
-  role: Message["role"];
-  created: number;
-  completed?: number;
-  error?: string;
-  text: string;
-  parentMessageId?: string | null;
-};
-
-export type NormalizedMessage = ObservedSessionMessage;
-
-export type ObservedExternalResponse = {
-  userMessageId: string | null;
-  promptText: string;
-  submittedAt: number;
-  response: ObservedSessionMessage;
-  consumedAssistantMessageIds: string[];
-};
-
-type StartedServer = {
-  url: string;
-  close(): void;
-};
-
-const OPENCODE_HOST_CAPABILITIES: StudioHostCapabilities = {
+const OPENCODE_PLUGIN_HOST_CAPABILITIES: StudioHostCapabilities = {
   steeringMode: "adapter-queue",
   stopSupported: true,
 };
 
-export function normalizeSessionMessageRecord(record: SessionMessageRecord): NormalizedMessage {
-  const text = record.parts
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join("\n\n")
-    .trim();
-  const parentMessageId = typeof (record.info as { parentID?: unknown }).parentID === "string"
-    ? (record.info as { parentID: string }).parentID
-    : undefined;
-
-  return {
-    id: record.info.id,
-    role: record.info.role,
-    created: record.info.time.created,
-    completed: record.info.role === "assistant" ? record.info.time.completed : undefined,
-    error: record.info.role === "assistant" && record.info.error
-      ? `${record.info.error.name}: ${record.info.error.data.message ?? "unknown error"}`
-      : undefined,
-    text,
-    parentMessageId,
-  };
-}
-
-export function compareObservedMessages(a: ObservedSessionMessage, b: ObservedSessionMessage): number {
-  if (a.created !== b.created) return a.created - b.created;
-  if (a.completed !== b.completed) return (a.completed ?? a.created) - (b.completed ?? b.created);
-  if (a.role === b.role) return a.id.localeCompare(b.id);
-  return a.role === "user" ? -1 : 1;
-}
-
-export function sortObservedMessages(messages: ReadonlyArray<ObservedSessionMessage>): ObservedSessionMessage[] {
-  return [...messages].sort(compareObservedMessages);
-}
-
-export function hasObservedAssistantContent(message: ObservedSessionMessage): boolean {
-  return message.role === "assistant" && Boolean(message.text || message.error);
-}
-
-export function resolveObservedRootUserMessage(
-  message: ObservedSessionMessage,
-  messageById: ReadonlyMap<string, ObservedSessionMessage>,
-): ObservedSessionMessage | null {
-  if (message.role === "user") return message;
-
-  const visited = new Set<string>();
-  let parentMessageId = message.parentMessageId ?? null;
-  while (parentMessageId && !visited.has(parentMessageId)) {
-    visited.add(parentMessageId);
-    const parent = messageById.get(parentMessageId);
-    if (!parent) return null;
-    if (parent.role === "user") return parent;
-    parentMessageId = parent.parentMessageId ?? null;
-  }
-
-  return null;
-}
-
-export function selectLatestObservedAssistantResponse(
-  messages: ReadonlyArray<ObservedSessionMessage>,
-): ObservedSessionMessage | null {
-  const ordered = sortObservedMessages(messages);
-  for (let i = ordered.length - 1; i >= 0; i--) {
-    const candidate = ordered[i];
-    if (candidate && hasObservedAssistantContent(candidate)) {
-      return candidate;
-    }
-  }
-  return ordered[ordered.length - 1] ?? null;
-}
-
-export function collectObservedAssistantResponsesForUser(
-  messages: ReadonlyArray<ObservedSessionMessage>,
-  matchedAssistantIds: ReadonlySet<string>,
-  userMessageId: string,
-): ObservedSessionMessage[] {
-  const ordered = sortObservedMessages(messages);
-  const messageById = new Map(ordered.map((message) => [message.id, message]));
-  return ordered.filter((message) => (
-    message.role === "assistant"
-    && !matchedAssistantIds.has(message.id)
-    && resolveObservedRootUserMessage(message, messageById)?.id === userMessageId
-  ));
-}
-
-export function eventSessionId(event: Event): string | null {
-  const props = event.properties as Record<string, unknown> | undefined;
-  if (!props) return null;
-  if (typeof props.sessionID === "string") return props.sessionID;
-  if (event.type === "message.updated") {
-    const info = props.info as { sessionID?: string } | undefined;
-    return typeof info?.sessionID === "string" ? info.sessionID : null;
-  }
-  if (event.type === "message.part.updated") {
-    const part = props.part as { sessionID?: string } | undefined;
-    return typeof part?.sessionID === "string" ? part.sessionID : null;
-  }
-  const deltaEvent = event as unknown as { type?: string; properties?: unknown };
-  if (isMessagePartDeltaEvent(deltaEvent)) {
-    return typeof deltaEvent.properties.sessionID === "string" ? deltaEvent.properties.sessionID : null;
-  }
-  return null;
-}
-
-export function summarizeEvent(event: Event): string {
-  const props = event.properties as Record<string, unknown> | undefined;
-  if (event.type === "session.status") {
-    const status = props?.status as { type?: string } | undefined;
-    return `${event.type} status=${status?.type ?? "unknown"}`;
-  }
-  if (event.type === "message.updated") {
-    const info = props?.info as { role?: string; id?: string } | undefined;
-    return `${event.type} role=${info?.role ?? "?"} message=${info?.id ?? "?"}`;
-  }
-  if (event.type === "message.part.updated") {
-    const part = props?.part as { type?: string; id?: string } | undefined;
-    return `${event.type} partType=${part?.type ?? "?"} part=${part?.id ?? "?"}`;
-  }
-  const deltaEvent = event as unknown as { type?: string; properties?: unknown };
-  if (isMessagePartDeltaEvent(deltaEvent)) {
-    return `${deltaEvent.type} field=${typeof deltaEvent.properties.field === "string" ? deltaEvent.properties.field : "?"} part=${typeof deltaEvent.properties.partID === "string" ? deltaEvent.properties.partID : "?"}`;
-  }
-  return event.type;
-}
-
-export function extractAssistantPartText(part: Part): string | undefined {
-  if ((part.type === "text" || part.type === "reasoning") && typeof part.text === "string") {
-    return part.text;
-  }
-  return undefined;
-}
-
-export function collectObservedExternalResponses(
-  messages: ReadonlyArray<ObservedSessionMessage>,
-  matchedAssistantIds: ReadonlySet<string>,
-): ObservedExternalResponse[] {
-  const ordered = sortObservedMessages(messages);
-  const messageById = new Map(ordered.map((message) => [message.id, message]));
-  const grouped = new Map<string, {
-    order: number;
-    userMessageId: string | null;
-    promptText: string;
-    submittedAt: number;
-    assistants: ObservedSessionMessage[];
-  }>();
-  let latestUser: ObservedSessionMessage | null = null;
-  let nextOrder = 0;
-
-  for (const message of ordered) {
-    if (message.role === "user") {
-      latestUser = message;
-      continue;
-    }
-    if (message.role !== "assistant") continue;
-    if (matchedAssistantIds.has(message.id)) continue;
-    if (!hasObservedAssistantContent(message)) continue;
-
-    const rootedUser = resolveObservedRootUserMessage(message, messageById);
-    const observedUser = rootedUser ?? latestUser;
-    const key = observedUser?.id ? `user:${observedUser.id}` : `orphan:${message.id}`;
-    let group = grouped.get(key);
-    if (!group) {
-      group = {
-        order: nextOrder++,
-        userMessageId: observedUser?.id ?? null,
-        promptText: observedUser?.text ?? "",
-        submittedAt: observedUser?.created ?? message.created,
-        assistants: [],
-      };
-      grouped.set(key, group);
-    }
-    group.assistants.push(message);
-  }
-
-  return [...grouped.values()]
-    .sort((a, b) => a.order - b.order)
-    .map((group) => {
-      const response = selectLatestObservedAssistantResponse(group.assistants);
-      if (!response) return null;
-      return {
-        userMessageId: group.userMessageId,
-        promptText: group.promptText,
-        submittedAt: group.submittedAt,
-        response,
-        consumedAssistantMessageIds: group.assistants.map((assistant) => assistant.id),
-      } satisfies ObservedExternalResponse;
-    })
-    .filter((value): value is ObservedExternalResponse => Boolean(value));
-}
-
-export function isMessagePartDeltaEvent(event: { type?: string; properties?: unknown }): event is {
-  type: "message.part.delta";
-  properties: {
-    sessionID?: string;
-    messageID?: string;
-    partID?: string;
-    field?: string;
-    delta?: string;
-  };
-} {
-  return event.type === "message.part.delta";
-}
-
-export class OpencodeStudioHost implements StudioHost {
-  private readonly options: OpencodeStudioHostOptions;
+export class PluginBackedOpencodeStudioHost implements StudioHost {
+  private readonly options: PluginBackedOpencodeStudioHostOptions;
   private readonly listeners = new Set<StudioHostListener>();
   private readonly baselineMessageIds = new Set<string>();
   private readonly matchedUserIds = new Set<string>();
@@ -313,22 +47,20 @@ export class OpencodeStudioHost implements StudioHost {
   private readonly messageRolesById = new Map<string, Message["role"]>();
   private readonly core = new StudioCore({ backend: "opencode" });
 
-  private client!: ReturnType<typeof createOpencodeClient>;
-  private startedServer: StartedServer | null = null;
+  private readonly client: OpencodeClient;
   private session!: Session;
-  private eventAbortController = new AbortController();
-  private eventLoop: Promise<void> | null = null;
   private handlingIdle = false;
   private closed = false;
 
-  static async create(options: OpencodeStudioHostOptions): Promise<OpencodeStudioHost> {
-    const host = new OpencodeStudioHost(options);
+  static async create(options: PluginBackedOpencodeStudioHostOptions): Promise<PluginBackedOpencodeStudioHost> {
+    const host = new PluginBackedOpencodeStudioHost(options);
     await host.initialize();
     return host;
   }
 
-  private constructor(options: OpencodeStudioHostOptions) {
+  private constructor(options: PluginBackedOpencodeStudioHostOptions) {
     this.options = options;
+    this.client = options.client;
   }
 
   getState(): StudioHostState {
@@ -336,7 +68,7 @@ export class OpencodeStudioHost implements StudioHost {
   }
 
   getCapabilities(): StudioHostCapabilities {
-    return { ...OPENCODE_HOST_CAPABILITIES };
+    return { ...OPENCODE_PLUGIN_HOST_CAPABILITIES };
   }
 
   getHistory(): StudioHostHistoryItem[] {
@@ -396,30 +128,16 @@ export class OpencodeStudioHost implements StudioHost {
     this.closed = true;
     this.core.markClosed();
     this.emitState();
-    this.eventAbortController.abort();
-    try {
-      await this.eventLoop;
-    } catch {
-      // ignore shutdown races
-    }
-    if (this.startedServer) {
-      this.startedServer.close();
-      this.startedServer = null;
-    }
+  }
+
+  async ingestEvent(event: Event): Promise<void> {
+    if (this.closed) return;
+    if (eventSessionId(event) !== this.session.id && event.type !== "server.connected") return;
+    this.options.eventLogger?.(`[event] ${summarizeEvent(event)}`);
+    await this.handleEvent(event);
   }
 
   private async initialize(): Promise<void> {
-    if (this.options.baseUrl) {
-      this.client = createOpencodeClient({
-        baseUrl: this.options.baseUrl,
-        directory: this.options.directory,
-      });
-    } else {
-      const runtime = await createOpencode({});
-      this.client = runtime.client;
-      this.startedServer = runtime.server;
-    }
-
     this.session = await this.createOrReuseSession();
     this.core.setSessionInfo({ sessionId: this.session.id, sessionTitle: this.session.title });
     this.emitState();
@@ -427,28 +145,11 @@ export class OpencodeStudioHost implements StudioHost {
     const initialMessages = await this.fetchSessionMessages();
     for (const message of initialMessages) {
       this.baselineMessageIds.add(message.info.id);
-    }
-
-    const events = await this.client.event.subscribe({
-      query: { directory: this.options.directory },
-      signal: this.eventAbortController.signal,
-      onSseError: (error) => {
-        if (this.eventAbortController.signal.aborted) return;
-        this.fail(error instanceof Error ? error : new Error(String(error)));
-      },
-    });
-
-    this.eventLoop = (async () => {
-      for await (const event of events.stream as AsyncIterable<Event>) {
-        if (this.closed) return;
-        if (eventSessionId(event) !== this.session.id && event.type !== "server.connected") continue;
-        this.options.eventLogger?.(`[event] ${summarizeEvent(event)}`);
-        await this.handleEvent(event);
+      this.messageRolesById.set(message.info.id, message.info.role);
+      for (const part of message.parts) {
+        this.partTypesById.set(part.id, part.type);
       }
-    })().catch((error: unknown) => {
-      if (this.eventAbortController.signal.aborted) return;
-      this.fail(error instanceof Error ? error : new Error(String(error)));
-    });
+    }
   }
 
   private async createOrReuseSession(): Promise<Session> {
@@ -770,6 +471,6 @@ export class OpencodeStudioHost implements StudioHost {
   }
 }
 
-export async function createOpencodeStudioHost(options: OpencodeStudioHostOptions): Promise<StudioHost> {
-  return OpencodeStudioHost.create(options);
+export async function createPluginBackedOpencodeStudioHost(options: PluginBackedOpencodeStudioHostOptions): Promise<PluginBackedOpencodeStudioHost> {
+  return PluginBackedOpencodeStudioHost.create(options);
 }
