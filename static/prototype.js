@@ -6,6 +6,7 @@ const STUDIO_ACCESS_TOKEN = typeof BOOT_CONFIG.token === "string" ? BOOT_CONFIG.
 
 const state = {
   snapshot: null,
+  stableCurrentModel: null,
   selectedPromptId: null,
   busy: false,
   followLatest: true,
@@ -231,10 +232,66 @@ function formatReferenceTime(value) {
   }
 }
 
+function formatProviderLabel(providerID) {
+  const raw = String(providerID || "").trim().toLowerCase();
+  if (!raw) return "";
+  const known = {
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    google: "Google",
+    "github-copilot": "GitHub Copilot",
+    opencode: "OpenCode",
+    "opencode-go": "OpenCode Go",
+    togetherai: "TogetherAI",
+  };
+  return known[raw] || providerID;
+}
+
 function formatModel(snapshot) {
   const model = snapshot?.currentModel;
   if (!model || !model.providerID || !model.modelID) return "-";
   return `${model.providerID}/${model.modelID}`;
+}
+
+function formatModelSummary(snapshot) {
+  const model = snapshot?.currentModel;
+  if (!model || !model.providerID || !model.modelID) return "Model: unknown";
+  const parts = [model.modelID];
+  const providerLabel = formatProviderLabel(model.providerID);
+  if (providerLabel) parts.push(providerLabel);
+  const variant = String(model.variant || "").trim();
+  if (variant) parts.push(variant);
+  return `Model: ${parts.join(" · ")}`;
+}
+
+function formatAgentLabel(snapshot) {
+  const raw = String(snapshot?.currentModel?.agent || "").trim();
+  if (!raw) return "";
+  return raw.replace(/[-_]+/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function getTokenUsageTotal(snapshot) {
+  return getTokenUsageTotalValue(snapshot?.currentModel?.tokenUsage);
+}
+
+function formatCompactTokenCount(value) {
+  const count = Number(value);
+  if (!Number.isFinite(count) || count < 0) return "-";
+  if (count < 1000) return `${Math.round(count)}`;
+  if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1_000_000).toFixed(count < 10_000_000 ? 1 : 0)}M`;
+}
+
+function formatContextUsage(snapshot) {
+  const total = getTokenUsageTotal(snapshot);
+  if (total == null) return "Context: unknown";
+  const limit = snapshot?.currentModel?.contextLimit;
+  if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+    const percent = Math.max(0, Math.round((total / limit) * 100));
+    return `Context: ${formatCompactTokenCount(total)} / ${formatCompactTokenCount(limit)} (${percent}%)`;
+  }
+  return `Context: ${formatCompactTokenCount(total)} tokens`;
 }
 
 function formatSessionLabel(snapshot) {
@@ -256,6 +313,87 @@ function formatProjectLabel(snapshot) {
   const normalized = directory.replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : normalized;
+}
+
+function cloneTokenUsage(usage) {
+  if (!usage || typeof usage !== "object") return undefined;
+  const clone = {};
+  if (typeof usage.total === "number") clone.total = usage.total;
+  if (typeof usage.input === "number") clone.input = usage.input;
+  if (typeof usage.output === "number") clone.output = usage.output;
+  if (typeof usage.reasoning === "number") clone.reasoning = usage.reasoning;
+  return Object.keys(clone).length ? clone : undefined;
+}
+
+function cloneModelSnapshot(model) {
+  if (!model || typeof model !== "object") return null;
+  return {
+    ...model,
+    tokenUsage: cloneTokenUsage(model.tokenUsage),
+  };
+}
+
+function getTokenUsageTotalValue(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  if (typeof usage.total === "number" && Number.isFinite(usage.total) && usage.total >= 0) {
+    return usage.total;
+  }
+  const parts = [usage.input, usage.output, usage.reasoning].filter((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
+  if (!parts.length) return null;
+  return parts.reduce((sum, value) => sum + value, 0);
+}
+
+function hasMeaningfulTokenUsage(usage) {
+  const total = getTokenUsageTotalValue(usage);
+  return total != null && total > 0;
+}
+
+function modelSnapshotKey(model) {
+  const providerID = String(model?.providerID || "").trim();
+  const modelID = String(model?.modelID || "").trim();
+  return providerID && modelID ? `${providerID}/${modelID}` : "";
+}
+
+function mergeSnapshotForDisplay(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return snapshot;
+
+  const stable = cloneModelSnapshot(state.stableCurrentModel);
+  const incoming = cloneModelSnapshot(snapshot.currentModel);
+
+  if (incoming) {
+    const sameModel = Boolean(stable) && modelSnapshotKey(stable) === modelSnapshotKey(incoming);
+    if (sameModel) {
+      incoming.agent = incoming.agent || stable.agent;
+      incoming.variant = incoming.variant || stable.variant;
+      incoming.contextLimit = incoming.contextLimit || stable.contextLimit;
+
+      const running = snapshot?.state?.runState === "running" || snapshot?.state?.runState === "stopping";
+      const incomingTotal = getTokenUsageTotalValue(incoming.tokenUsage);
+      const stableTotal = getTokenUsageTotalValue(stable.tokenUsage);
+      const shouldKeepStableUsage = running
+        ? (hasMeaningfulTokenUsage(stable.tokenUsage) && (incomingTotal == null || incomingTotal <= 0 || incomingTotal < stableTotal))
+        : !hasMeaningfulTokenUsage(incoming.tokenUsage);
+
+      if (shouldKeepStableUsage) {
+        incoming.tokenUsage = stable.tokenUsage;
+      }
+    }
+    snapshot.currentModel = incoming;
+    state.stableCurrentModel = cloneModelSnapshot(incoming);
+    return snapshot;
+  }
+
+  if (stable) {
+    snapshot.currentModel = stable;
+  }
+  return snapshot;
+}
+
+function updateDocumentTitle() {
+  const projectLabel = formatProjectLabel(state.snapshot);
+  document.title = projectLabel
+    ? `πₒ Studio · ${projectLabel}`
+    : "πₒ Studio · OpenCode";
 }
 
 function getHistoryPromptButtonLabel(item) {
@@ -1911,13 +2049,13 @@ function applyStatus(message, level = "", spinning = false) {
 function deriveStatus() {
   const snapshot = state.snapshot;
   if (!snapshot) {
-    return { message: "Connecting · Studio script starting…", level: "", spinning: true };
+    return { message: "Connecting · Studio bridge starting…", level: "", spinning: true };
   }
   if (snapshot.state.lastError) {
     return { message: `Error · ${snapshot.state.lastError}`, level: "error", spinning: false };
   }
   if (state.busy) {
-    return { message: "Studio: sending request…", level: "", spinning: true };
+    return { message: "Studio: sending request to the attached session…", level: "", spinning: true };
   }
   if (snapshot.state.runState === "stopping") {
     return { message: "Studio: stopping current run…", level: "warning", spinning: true };
@@ -1925,17 +2063,52 @@ function deriveStatus() {
   if (snapshot.state.runState === "running") {
     const activeTurn = snapshot.activeTurn;
     const elapsed = activeTurn ? formatRelativeDuration(activeTurn.submittedAt, snapshot.now) : "-";
-    const action = activeTurn
-      ? (activeTurn.promptMode === "run" ? "running editor text" : `queueing steering ${activeTurn.promptSteeringCount}`)
-      : "waiting for queued steering";
-    const suffix = elapsed !== "-" ? ` · ${elapsed}` : "";
-    return { message: `Studio: ${action}…${suffix}`, level: "", spinning: true };
+    const queueLength = snapshot.state.queueLength ?? 0;
+    const queueSuffix = queueLength > 0 ? ` · ${queueLength} queued` : "";
+    const variant = String(snapshot.currentModel?.variant || "").trim();
+    const variantSuffix = variant ? ` · ${variant}` : "";
+    let action = "Studio: waiting for queued steering";
+    if (activeTurn) {
+      if (activeTurn.promptMode === "run") {
+        action = activeTurn.firstOutputTextAt
+          ? "Studio: generating response"
+          : "Studio: running editor text";
+      } else {
+        action = activeTurn.firstOutputTextAt
+          ? `Studio: generating steering ${activeTurn.promptSteeringCount}`
+          : `Studio: queueing steering ${activeTurn.promptSteeringCount}`;
+      }
+    }
+    const elapsedSuffix = elapsed !== "-" ? ` · ${elapsed}` : "";
+    return { message: `${action}…${elapsedSuffix}${queueSuffix}${variantSuffix}`, level: "", spinning: true };
   }
   if (snapshot.state.lastBackendStatus === "busy") {
-    return { message: "Session: running from the attached terminal…", level: "", spinning: true };
+    const variant = String(snapshot.currentModel?.variant || "").trim();
+    const variantSuffix = variant ? ` · ${variant}` : "";
+    const agentLabel = formatAgentLabel(snapshot);
+    const source = snapshot.currentModel?.source;
+    const action = source === "assistant"
+      ? "Attached terminal: generating response"
+      : (agentLabel ? `Attached terminal: ${agentLabel} running` : "Attached terminal: running");
+    return { message: `${action}…${variantSuffix}`, level: "", spinning: true };
   }
+
+  const history = getHistory();
+  const latest = getLatestHistoryItem();
+  if (latest) {
+    const selectedIndex = getSelectedHistoryIndex();
+    const selected = history.length && selectedIndex >= 0 ? selectedIndex + 1 : history.length;
+    const time = formatReferenceTime(latest.completedAt ?? latest.submittedAt ?? 0);
+    const suffix = time ? ` · ${time}` : "";
+    return {
+      message: `Ready · response ${selected}/${history.length}${suffix}`,
+      level: "",
+      spinning: false,
+    };
+  }
+
   return {
-    message: "Ready · Edit, run, queue steering, or inspect response history.",
+    message: "Ready · attached to active session.",
     level: "",
     spinning: false,
   };
@@ -1975,33 +2148,46 @@ function renderFooterMeta() {
   const queue = state.snapshot?.state?.queueLength ?? 0;
   const parts = [];
 
-  const model = formatModel(state.snapshot);
-  if (model && model !== "-") {
-    parts.push(`Model: ${model}`);
-  }
+  parts.push(formatModelSummary(state.snapshot));
 
   const projectLabel = formatProjectLabel(state.snapshot);
   if (projectLabel) {
     parts.push(`Project: ${projectLabel}`);
   }
 
-  const sessionLabel = formatSessionLabel(state.snapshot);
-  if (sessionLabel) {
-    parts.push(`Session: ${sessionLabel}`);
+  const agentLabel = formatAgentLabel(state.snapshot);
+  if (agentLabel) {
+    parts.push(`Agent: ${agentLabel}`);
   }
 
-  parts.push(`History: ${selected}/${history.length}`);
-  parts.push(`Queue: ${queue}`);
+  parts.push(formatContextUsage(state.snapshot));
 
   elements.footerMetaText.textContent = parts.join(" · ");
   if (elements.footerMeta) {
     const titleParts = [];
     const directory = String(state.snapshot?.launchContext?.directory || "").trim();
     if (directory) titleParts.push(`Project directory: ${directory}`);
+    const sessionLabel = formatSessionLabel(state.snapshot);
+    if (sessionLabel) titleParts.push(`Session: ${sessionLabel}`);
     const sessionId = String(state.snapshot?.state?.sessionId || "").trim();
     if (sessionId) titleParts.push(`Session ID: ${sessionId}`);
     const baseUrl = String(state.snapshot?.launchContext?.baseUrl || "").trim();
     if (baseUrl) titleParts.push(`Opencode server: ${baseUrl}`);
+    titleParts.push(`History: ${selected}/${history.length}`);
+    titleParts.push(`Queue: ${queue}`);
+    const model = formatModel(state.snapshot);
+    if (model && model !== "-") titleParts.push(`Model ID: ${model}`);
+    const variant = String(state.snapshot?.currentModel?.variant || "").trim();
+    if (variant) titleParts.push(`Thinking level: ${variant}`);
+    const tokenUsage = state.snapshot?.currentModel?.tokenUsage;
+    if (tokenUsage) {
+      if (typeof tokenUsage.total === "number") titleParts.push(`Tokens total: ${tokenUsage.total}`);
+      if (typeof tokenUsage.input === "number") titleParts.push(`Tokens input: ${tokenUsage.input}`);
+      if (typeof tokenUsage.output === "number") titleParts.push(`Tokens output: ${tokenUsage.output}`);
+      if (typeof tokenUsage.reasoning === "number") titleParts.push(`Tokens reasoning: ${tokenUsage.reasoning}`);
+    }
+    const contextLimit = state.snapshot?.currentModel?.contextLimit;
+    if (typeof contextLimit === "number") titleParts.push(`Context limit: ${contextLimit}`);
     const themeInfo = state.snapshot?.launchContext?.theme || getStudioThemeInfo();
     const themeRaw = String(themeInfo?.raw || "").trim();
     const themePreference = String(themeInfo?.preference || "").trim();
@@ -2009,6 +2195,7 @@ function renderFooterMeta() {
     else if (themePreference) titleParts.push(`Theme mode: ${themePreference}`);
     elements.footerMeta.title = titleParts.join("\n");
   }
+  updateDocumentTitle();
 }
 
 function updateActionState() {
@@ -2100,7 +2287,7 @@ async function fetchSnapshot() {
       : `Snapshot request failed with ${response.status}`;
     throw new Error(message);
   }
-  state.snapshot = await response.json();
+  state.snapshot = mergeSnapshotForDisplay(await response.json());
   render();
 }
 
@@ -2118,7 +2305,7 @@ async function postJson(path, payload = {}) {
       throw new Error(data.error || `Request failed with ${response.status}`);
     }
     if (data.snapshot) {
-      state.snapshot = data.snapshot;
+      state.snapshot = mergeSnapshotForDisplay(data.snapshot);
     }
     render();
     restartSnapshotPolling(true);

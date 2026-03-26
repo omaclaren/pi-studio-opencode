@@ -1,11 +1,12 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Config, Event, Part } from "@opencode-ai/sdk";
+import type { Config, Event, OpencodeClient, Part } from "@opencode-ai/sdk";
 import type { Plugin } from "@opencode-ai/plugin";
 import { createPluginBackedOpencodeStudioHost, type PluginBackedOpencodeStudioHost } from "./host-opencode-plugin.js";
 import { openBrowserUrl } from "./open-browser.js";
 import {
   startPrototypeServer,
+  type PrototypeModelCatalogEntry,
   type PrototypeServerInstance,
   type PrototypeServerOptions,
 } from "./prototype-server.js";
@@ -120,6 +121,48 @@ function appendLauncherLog(line: string): void {
   appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`, "utf8");
 }
 
+function parseFiniteContextLimit(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+async function readPrototypeModelCatalog(client: OpencodeClient, directory: string): Promise<PrototypeModelCatalogEntry[]> {
+  try {
+    const response = await client.config.providers({
+      query: { directory },
+      throwOnError: true,
+    });
+    const providers = Array.isArray(response.data?.providers) ? response.data.providers : [];
+    const catalog: PrototypeModelCatalogEntry[] = [];
+
+    for (const provider of providers) {
+      const providerID = typeof provider?.id === "string" ? provider.id.trim() : "";
+      if (!providerID) continue;
+
+      const models = provider?.models && typeof provider.models === "object"
+        ? Object.entries(provider.models)
+        : [];
+
+      for (const [modelID, model] of models) {
+        const normalizedModelID = typeof modelID === "string" ? modelID.trim() : "";
+        if (!normalizedModelID) continue;
+
+        catalog.push({
+          providerID,
+          modelID: normalizedModelID,
+          contextLimit: parseFiniteContextLimit((model as { limit?: { context?: unknown } }).limit?.context),
+        });
+      }
+    }
+
+    return catalog;
+  } catch (error) {
+    appendLauncherLog(`model catalog load failed error=${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+}
+
 function ensureStudioCommand(config: Config): void {
   config.command ??= {};
   if (!config.command[STUDIO_COMMAND_NAME]) {
@@ -216,6 +259,8 @@ class StudioBridgeManager {
       this.bridges.delete(input.sessionId);
     }
 
+    const modelCatalog = await readPrototypeModelCatalog(this.ctx.client, input.directory);
+
     let hostRef: PluginBackedOpencodeStudioHost | null = null;
     const instance = await startPrototypeServer({
       directory: input.directory,
@@ -224,6 +269,7 @@ class StudioBridgeManager {
       host: input.launchOptions.host,
       port: input.launchOptions.port,
       consoleLogs: false,
+      modelCatalog,
     }, async ({ options, eventLogger, telemetryListener }) => {
       hostRef = await createPluginBackedOpencodeStudioHost({
         client: this.ctx.client,

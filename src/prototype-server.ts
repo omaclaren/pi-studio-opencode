@@ -6,10 +6,16 @@ import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { createOpencodeStudioHost, type OpencodeStudioHostTelemetryEvent } from "./host-opencode.js";
+import { createOpencodeStudioHost, type OpencodeMessageTokenUsage, type OpencodeStudioHostTelemetryEvent } from "./host-opencode.js";
 import { renderPrototypePdfWithPandoc, sanitizePrototypePdfFilename, PROTOTYPE_PDF_EXPORT_MAX_CHARS } from "./prototype-pdf.js";
 import { buildPrototypeThemeStylesheet, readPrototypeThemeDescriptor, type PrototypeThemeDescriptor } from "./prototype-theme.js";
 import type { StudioHost, StudioHostCapabilities, StudioHostHistoryItem, StudioHostState } from "./studio-host-types.js";
+
+export type PrototypeModelCatalogEntry = {
+  providerID: string;
+  modelID: string;
+  contextLimit?: number;
+};
 
 export type PrototypeServerOptions = {
   directory: string;
@@ -19,6 +25,7 @@ export type PrototypeServerOptions = {
   host: string;
   port: number;
   consoleLogs?: boolean;
+  modelCatalog?: PrototypeModelCatalogEntry[];
 };
 
 type PrototypeTurnSnapshot = {
@@ -47,6 +54,9 @@ type PrototypeModelSnapshot = {
   providerID: string;
   modelID: string;
   agent?: string;
+  variant?: string;
+  tokenUsage?: OpencodeMessageTokenUsage;
+  contextLimit?: number;
   source: "user" | "assistant";
   messageId: string;
   at: number;
@@ -789,20 +799,31 @@ export async function startPrototypeServer(
   let listenHost = options.host;
   let listenPort = options.port;
   let stopped = false;
+  const modelCatalogByKey = new Map<string, PrototypeModelCatalogEntry>(
+    (options.modelCatalog ?? []).map((entry) => [`${entry.providerID}/${entry.modelID}`, entry]),
+  );
 
   const updateCurrentModel = (input: {
     providerID?: string;
     modelID?: string;
     agent?: string;
+    variant?: string;
+    tokenUsage?: OpencodeMessageTokenUsage;
     source: "user" | "assistant";
     messageId: string;
     at: number;
   }): void => {
     if (!input.providerID || !input.modelID) return;
+    const modelKey = `${input.providerID}/${input.modelID}`;
+    const catalogEntry = modelCatalogByKey.get(modelKey);
+    const sameModel = currentModel && currentModel.providerID === input.providerID && currentModel.modelID === input.modelID;
     currentModel = {
       providerID: input.providerID,
       modelID: input.modelID,
-      agent: input.agent,
+      agent: input.agent ?? (sameModel ? currentModel?.agent : undefined),
+      variant: input.variant ?? (sameModel ? currentModel?.variant : undefined),
+      tokenUsage: input.tokenUsage ?? (sameModel ? currentModel?.tokenUsage : undefined),
+      contextLimit: catalogEntry?.contextLimit ?? (sameModel ? currentModel?.contextLimit : undefined),
       source: input.source,
       messageId: input.messageId,
       at: input.at,
@@ -827,6 +848,7 @@ export async function startPrototypeServer(
         providerID: event.providerID,
         modelID: event.modelID,
         agent: event.agent,
+        variant: event.variant,
         source: "user",
         messageId: event.messageId,
         at: event.at,
@@ -839,6 +861,8 @@ export async function startPrototypeServer(
         providerID: event.providerID,
         modelID: event.modelID,
         agent: event.agent,
+        variant: event.variant,
+        tokenUsage: event.tokenUsage,
         source: "assistant",
         messageId: event.messageId,
         at: event.at,

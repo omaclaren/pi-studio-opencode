@@ -5,6 +5,8 @@ import {
   collectObservedExternalResponses,
   eventSessionId,
   extractAssistantPartText,
+  extractMessageTokenUsage,
+  extractMessageVariant,
   isMessagePartDeltaEvent,
   normalizeSessionMessageRecord,
   selectLatestObservedAssistantResponse,
@@ -149,6 +151,7 @@ export class PluginBackedOpencodeStudioHost implements StudioHost {
       for (const part of message.parts) {
         this.partTypesById.set(part.id, part.type);
       }
+      this.emitModelTelemetryForMessage(message.info);
     }
   }
 
@@ -176,6 +179,38 @@ export class PluginBackedOpencodeStudioHost implements StudioHost {
     return created.data;
   }
 
+  private emitModelTelemetryForMessage(info: Message): void {
+    const at = info.role === "assistant"
+      ? (info.time.completed ?? info.time.created)
+      : info.time.created;
+
+    if (info.role === "user") {
+      this.emitTelemetry({
+        type: "user.message.updated",
+        at,
+        messageId: info.id,
+        providerID: info.model?.providerID,
+        modelID: info.model?.modelID,
+        agent: info.agent,
+        variant: extractMessageVariant(info),
+      });
+      return;
+    }
+
+    this.emitTelemetry({
+      type: "assistant.message.updated",
+      at,
+      messageId: info.id,
+      providerID: info.providerID,
+      modelID: info.modelID,
+      agent: typeof ((info as unknown) as { agent?: unknown }).agent === "string"
+        ? ((info as unknown) as { agent: string }).agent
+        : undefined,
+      variant: extractMessageVariant(info),
+      tokenUsage: extractMessageTokenUsage(info),
+    });
+  }
+
   private async handleEvent(event: Event): Promise<void> {
     if (event.type === "session.status") {
       const props = event.properties as { status?: { type?: string } };
@@ -187,39 +222,10 @@ export class PluginBackedOpencodeStudioHost implements StudioHost {
     }
 
     if (event.type === "message.updated") {
-      const props = event.properties as {
-        info?: {
-          role?: Message["role"];
-          id?: string;
-          agent?: string;
-          model?: { providerID?: string; modelID?: string };
-          providerID?: string;
-          modelID?: string;
-        };
-      };
-      if (typeof props.info?.id === "string" && typeof props.info.role === "string") {
+      const props = event.properties as { info?: Message };
+      if (props.info && typeof props.info.id === "string" && typeof props.info.role === "string") {
         this.messageRolesById.set(props.info.id, props.info.role);
-      }
-      if (props.info?.role === "user" && typeof props.info.id === "string") {
-        this.emitTelemetry({
-          type: "user.message.updated",
-          at: Date.now(),
-          messageId: props.info.id,
-          providerID: props.info.model?.providerID,
-          modelID: props.info.model?.modelID,
-          agent: props.info.agent,
-        });
-        return;
-      }
-      if (props.info?.role === "assistant" && typeof props.info.id === "string") {
-        this.emitTelemetry({
-          type: "assistant.message.updated",
-          at: Date.now(),
-          messageId: props.info.id,
-          providerID: props.info.providerID,
-          modelID: props.info.modelID,
-          agent: props.info.agent,
-        });
+        this.emitModelTelemetryForMessage(props.info);
       }
       return;
     }

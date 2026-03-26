@@ -3,6 +3,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { StudioCore } from "./studio-core.js";
 import type { StudioHost, StudioHostCapabilities, StudioHostHistoryItem, StudioHostListener, StudioHostState } from "./studio-host-types.js";
 
+export type OpencodeMessageTokenUsage = {
+  total?: number;
+  input?: number;
+  output?: number;
+  reasoning?: number;
+};
+
 export type OpencodeStudioHostTelemetryEvent =
   | {
     type: "submission.dispatched";
@@ -21,6 +28,7 @@ export type OpencodeStudioHostTelemetryEvent =
     providerID?: string;
     modelID?: string;
     agent?: string;
+    variant?: string;
   }
   | {
     type: "assistant.message.updated";
@@ -29,6 +37,8 @@ export type OpencodeStudioHostTelemetryEvent =
     providerID?: string;
     modelID?: string;
     agent?: string;
+    variant?: string;
+    tokenUsage?: OpencodeMessageTokenUsage;
   }
   | {
     type: "assistant.part.updated";
@@ -82,6 +92,35 @@ export type ObservedSessionMessage = {
 };
 
 export type NormalizedMessage = ObservedSessionMessage;
+
+function finiteTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+export function extractMessageVariant(info: unknown): string | undefined {
+  const raw = typeof (info as { variant?: unknown })?.variant === "string"
+    ? (info as { variant: string }).variant.trim()
+    : "";
+  return raw || undefined;
+}
+
+export function extractMessageTokenUsage(info: unknown): OpencodeMessageTokenUsage | undefined {
+  const tokens = (info as { tokens?: unknown })?.tokens;
+  if (!tokens || typeof tokens !== "object") return undefined;
+
+  const usage: OpencodeMessageTokenUsage = {
+    total: finiteTokenCount((tokens as { total?: unknown }).total),
+    input: finiteTokenCount((tokens as { input?: unknown }).input),
+    output: finiteTokenCount((tokens as { output?: unknown }).output),
+    reasoning: finiteTokenCount((tokens as { reasoning?: unknown }).reasoning),
+  };
+
+  return usage.total != null || usage.input != null || usage.output != null || usage.reasoning != null
+    ? usage
+    : undefined;
+}
 
 export type ObservedExternalResponse = {
   userMessageId: string | null;
@@ -427,6 +466,11 @@ export class OpencodeStudioHost implements StudioHost {
     const initialMessages = await this.fetchSessionMessages();
     for (const message of initialMessages) {
       this.baselineMessageIds.add(message.info.id);
+      this.messageRolesById.set(message.info.id, message.info.role);
+      for (const part of message.parts) {
+        this.partTypesById.set(part.id, part.type);
+      }
+      this.emitModelTelemetryForMessage(message.info);
     }
 
     const events = await this.client.event.subscribe({
@@ -475,6 +519,38 @@ export class OpencodeStudioHost implements StudioHost {
     return created.data;
   }
 
+  private emitModelTelemetryForMessage(info: Message): void {
+    const at = info.role === "assistant"
+      ? (info.time.completed ?? info.time.created)
+      : info.time.created;
+
+    if (info.role === "user") {
+      this.emitTelemetry({
+        type: "user.message.updated",
+        at,
+        messageId: info.id,
+        providerID: info.model?.providerID,
+        modelID: info.model?.modelID,
+        agent: info.agent,
+        variant: extractMessageVariant(info),
+      });
+      return;
+    }
+
+    this.emitTelemetry({
+      type: "assistant.message.updated",
+      at,
+      messageId: info.id,
+      providerID: info.providerID,
+      modelID: info.modelID,
+      agent: typeof ((info as unknown) as { agent?: unknown }).agent === "string"
+        ? ((info as unknown) as { agent: string }).agent
+        : undefined,
+      variant: extractMessageVariant(info),
+      tokenUsage: extractMessageTokenUsage(info),
+    });
+  }
+
   private async handleEvent(event: Event): Promise<void> {
     if (event.type === "session.status") {
       const props = event.properties as { status?: { type?: string } };
@@ -486,39 +562,10 @@ export class OpencodeStudioHost implements StudioHost {
     }
 
     if (event.type === "message.updated") {
-      const props = event.properties as {
-        info?: {
-          role?: Message["role"];
-          id?: string;
-          agent?: string;
-          model?: { providerID?: string; modelID?: string };
-          providerID?: string;
-          modelID?: string;
-        };
-      };
-      if (typeof props.info?.id === "string" && typeof props.info.role === "string") {
+      const props = event.properties as { info?: Message };
+      if (props.info && typeof props.info.id === "string" && typeof props.info.role === "string") {
         this.messageRolesById.set(props.info.id, props.info.role);
-      }
-      if (props.info?.role === "user" && typeof props.info.id === "string") {
-        this.emitTelemetry({
-          type: "user.message.updated",
-          at: Date.now(),
-          messageId: props.info.id,
-          providerID: props.info.model?.providerID,
-          modelID: props.info.model?.modelID,
-          agent: props.info.agent,
-        });
-        return;
-      }
-      if (props.info?.role === "assistant" && typeof props.info.id === "string") {
-        this.emitTelemetry({
-          type: "assistant.message.updated",
-          at: Date.now(),
-          messageId: props.info.id,
-          providerID: props.info.providerID,
-          modelID: props.info.modelID,
-          agent: props.info.agent,
-        });
+        this.emitModelTelemetryForMessage(props.info);
       }
       return;
     }
