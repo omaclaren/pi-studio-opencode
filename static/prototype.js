@@ -18,10 +18,17 @@ const state = {
   sourcePath: null,
   workingDir: "",
   editorHighlightEnabled: true,
+  responseHighlightEnabled: true,
   editorLanguage: "markdown",
   annotationsEnabled: true,
   editorHighlightRenderRaf: null,
   lastLoadedIntoEditorNormalized: "",
+  windowHasFocus: typeof document !== "undefined" && typeof document.hasFocus === "function" ? document.hasFocus() : true,
+  titleAttentionMessage: "",
+  titleAttentionTimer: null,
+  lastAppliedDocumentTitle: "",
+  initialSnapshotLoaded: false,
+  lastCompletedTurnKey: "",
   transientStatus: null,
   transientStatusTimer: null,
   spinnerTimer: null,
@@ -47,7 +54,9 @@ let mathJaxPromise = null;
 let pdfJsPromise = null;
 
 const EDITOR_HIGHLIGHT_MAX_CHARS = 100_000;
+const RESPONSE_HIGHLIGHT_MAX_CHARS = 120_000;
 const EDITOR_HIGHLIGHT_STORAGE_KEY = "studioPrototype.editorHighlightEnabled";
+const RESPONSE_HIGHLIGHT_STORAGE_KEY = "studioPrototype.responseHighlightEnabled";
 const EDITOR_LANGUAGE_STORAGE_KEY = "studioPrototype.editorLanguage";
 const ANNOTATION_MODE_STORAGE_KEY = "studioPrototype.annotationsEnabled";
 const EMPTY_OVERLAY_LINE = "\u200b";
@@ -112,6 +121,7 @@ const elements = {
   sourceHighlight: document.getElementById("sourceHighlight"),
   promptInput: document.getElementById("promptInput"),
   rightViewSelect: document.getElementById("rightViewSelect"),
+  responseHighlightSelect: document.getElementById("responseHighlightSelect"),
   runBtn: document.getElementById("runBtn"),
   queueBtn: document.getElementById("queueBtn"),
   copyDraftBtn: document.getElementById("copyDraftBtn"),
@@ -395,11 +405,112 @@ function mergeSnapshotForDisplay(snapshot) {
   return snapshot;
 }
 
-function updateDocumentTitle() {
+function buildBaseDocumentTitle() {
   const projectLabel = formatProjectLabel(state.snapshot);
-  document.title = projectLabel
+  return projectLabel
     ? `πₒ Studio · ${projectLabel}`
     : "πₒ Studio · OpenCode";
+}
+
+function shouldShowTitleAttention() {
+  const focused = typeof document !== "undefined" && typeof document.hasFocus === "function"
+    ? document.hasFocus()
+    : state.windowHasFocus;
+  return Boolean(typeof document !== "undefined" && document.hidden) || !focused;
+}
+
+function getComputedDocumentTitle() {
+  const baseTitle = buildBaseDocumentTitle();
+  return state.titleAttentionMessage
+    ? `${state.titleAttentionMessage} · ${baseTitle}`
+    : baseTitle;
+}
+
+function stopTitleAttentionTimer() {
+  if (!state.titleAttentionTimer) return;
+  window.clearInterval(state.titleAttentionTimer);
+  state.titleAttentionTimer = null;
+}
+
+function syncTitleAttentionTimer() {
+  if (!state.titleAttentionMessage || !shouldShowTitleAttention()) {
+    stopTitleAttentionTimer();
+    return;
+  }
+  if (state.titleAttentionTimer) return;
+  state.titleAttentionTimer = window.setInterval(() => {
+    if (!state.titleAttentionMessage || !shouldShowTitleAttention()) {
+      stopTitleAttentionTimer();
+      return;
+    }
+    const title = getComputedDocumentTitle();
+    if (document.title !== title) {
+      document.title = title;
+    }
+    state.lastAppliedDocumentTitle = title;
+  }, 1500);
+}
+
+function updateDocumentTitle(force = false) {
+  const title = getComputedDocumentTitle();
+  if (force || state.lastAppliedDocumentTitle !== title) {
+    document.title = title;
+    state.lastAppliedDocumentTitle = title;
+  }
+  syncTitleAttentionTimer();
+}
+
+function clearTitleAttention() {
+  if (!state.titleAttentionMessage) {
+    stopTitleAttentionTimer();
+    updateDocumentTitle();
+    return;
+  }
+  state.titleAttentionMessage = "";
+  stopTitleAttentionTimer();
+  updateDocumentTitle(true);
+}
+
+function armTitleAttention(message) {
+  const nextMessage = String(message || "").trim();
+  if (!nextMessage) return;
+  state.titleAttentionMessage = nextMessage;
+  updateDocumentTitle(true);
+}
+
+function getCompletedTurnKey(turn) {
+  if (!turn) return "";
+  const localPromptId = String(turn.localPromptId || "").trim();
+  const completedAt = typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt)
+    ? turn.completedAt
+    : 0;
+  if (localPromptId && completedAt > 0) return `${localPromptId}:${completedAt}`;
+  if (localPromptId) return localPromptId;
+  if (completedAt > 0) return `completed:${completedAt}`;
+  return "";
+}
+
+function maybeArmCompletionTitleAttention(snapshot, { initial = false } = {}) {
+  const nextKey = getCompletedTurnKey(snapshot?.lastCompletedTurn);
+  if (initial || !state.initialSnapshotLoaded) {
+    state.initialSnapshotLoaded = true;
+    state.lastCompletedTurnKey = nextKey;
+    return;
+  }
+
+  if (!nextKey || nextKey === state.lastCompletedTurnKey) {
+    state.lastCompletedTurnKey = nextKey;
+    return;
+  }
+
+  state.lastCompletedTurnKey = nextKey;
+  if (!shouldShowTitleAttention()) return;
+  armTitleAttention("● Response ready");
+}
+
+function applySnapshot(snapshot, options = {}) {
+  state.snapshot = mergeSnapshotForDisplay(snapshot);
+  maybeArmCompletionTitleAttention(state.snapshot, options);
 }
 
 function getHistoryPromptButtonLabel(item) {
@@ -846,6 +957,14 @@ function setEditorLanguage(lang) {
   }
   if (state.editorHighlightEnabled) {
     scheduleEditorHighlightRender();
+  }
+}
+
+function setResponseHighlightEnabled(enabled) {
+  state.responseHighlightEnabled = Boolean(enabled);
+  persistStoredToggle(RESPONSE_HIGHLIGHT_STORAGE_KEY, state.responseHighlightEnabled);
+  if (elements.responseHighlightSelect) {
+    elements.responseHighlightSelect.value = state.responseHighlightEnabled ? "on" : "off";
   }
 }
 
@@ -1963,8 +2082,24 @@ function renderResponsePane() {
     cancelScheduledResponsePreviewRender();
     finishPreviewRender(elements.responseView);
     state.responsePreviewRenderNonce += 1;
-    state.currentRenderedPreviewKey = `raw\u0000${display.kind}\u0000${display.markdown || ""}\u0000${display.text}`;
-    setResponseViewHtml(buildPlainMarkdownHtml(display.text));
+    const responseText = String(display.text || "");
+    state.currentRenderedPreviewKey = `raw\u0000${state.responseHighlightEnabled ? "highlight" : "plain"}\u0000${display.kind}\u0000${responseText}`;
+
+    if (!normalizedText(responseText)) {
+      setResponseViewHtml(buildPlainMarkdownHtml(responseText));
+    } else if (state.responseHighlightEnabled) {
+      if (responseText.length > RESPONSE_HIGHLIGHT_MAX_CHARS) {
+        setResponseViewHtml(buildPreviewErrorHtml(
+          "Response is too large for markdown highlighting. Showing plain markdown.",
+          responseText,
+        ));
+      } else {
+        setResponseViewHtml(`<div class="response-markdown-highlight">${highlightMarkdown(responseText)}</div>`);
+      }
+    } else {
+      setResponseViewHtml(buildPlainMarkdownHtml(responseText));
+    }
+
     applyPendingResponseScrollReset();
     scheduleResponsePaneRepaintNudge();
     elements.referenceBadge.textContent = getResponseReferenceLabel(display);
@@ -2231,6 +2366,10 @@ function updateActionState() {
   if (elements.saveAnnotatedBtn) elements.saveAnnotatedBtn.disabled = state.busy || !hasPrompt;
   if (elements.highlightSelect) elements.highlightSelect.disabled = state.busy;
   if (elements.langSelect) elements.langSelect.disabled = state.busy;
+  if (elements.responseHighlightSelect) {
+    elements.responseHighlightSelect.value = state.responseHighlightEnabled ? "on" : "off";
+    elements.responseHighlightSelect.disabled = state.rightView !== "markdown";
+  }
 
   elements.followSelect.value = state.followLatest ? "on" : "off";
   elements.historyPrevBtn.disabled = history.length === 0 || (!state.followLatest && selectedIndex <= 0) || (state.followLatest && history.length <= 1);
@@ -2293,7 +2432,7 @@ async function fetchSnapshot() {
       : `Snapshot request failed with ${response.status}`;
     throw new Error(message);
   }
-  state.snapshot = mergeSnapshotForDisplay(await response.json());
+  applySnapshot(await response.json(), { initial: !state.initialSnapshotLoaded });
   render();
 }
 
@@ -2311,7 +2450,7 @@ async function postJson(path, payload = {}) {
       throw new Error(data.error || `Request failed with ${response.status}`);
     }
     if (data.snapshot) {
-      state.snapshot = mergeSnapshotForDisplay(data.snapshot);
+      applySnapshot(data.snapshot);
     }
     render();
     restartSnapshotPolling(true);
@@ -2661,6 +2800,7 @@ async function runOrStop() {
     return;
   }
 
+  clearTitleAttention();
   try {
     await postJson("/api/run", { prompt });
     setTransientStatus("Running editor text.", "success");
@@ -2675,6 +2815,7 @@ async function queueSteering() {
     setTransientStatus("Add editor text before queueing steering.", "warning");
     return;
   }
+  clearTitleAttention();
   try {
     await postJson("/api/steer", { prompt });
     setTransientStatus("Queued steering.", "success");
@@ -2957,6 +3098,12 @@ function wireEvents() {
       render();
     });
   }
+  if (elements.responseHighlightSelect) {
+    elements.responseHighlightSelect.addEventListener("change", () => {
+      setResponseHighlightEnabled(elements.responseHighlightSelect.value === "on");
+      render();
+    });
+  }
   if (elements.langSelect) {
     elements.langSelect.addEventListener("change", () => {
       setEditorLanguage(elements.langSelect.value);
@@ -3020,16 +3167,29 @@ async function main() {
   setEditorLanguage(readStoredEditorLanguage() || state.editorLanguage);
   setAnnotationsEnabled(readStoredToggle(ANNOTATION_MODE_STORAGE_KEY) ?? true);
   setEditorHighlightEnabled(readStoredToggle(EDITOR_HIGHLIGHT_STORAGE_KEY) ?? true);
+  setResponseHighlightEnabled(readStoredToggle(RESPONSE_HIGHLIGHT_STORAGE_KEY) ?? true);
   setActivePane("left");
   applyPaneFocusClasses();
   wireEvents();
   await fetchSnapshot();
   restartSnapshotPolling();
   document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      state.windowHasFocus = typeof document.hasFocus === "function" ? document.hasFocus() : true;
+      clearTitleAttention();
+    }
     restartSnapshotPolling(!document.hidden);
   });
   window.addEventListener("focus", () => {
+    state.windowHasFocus = true;
+    clearTitleAttention();
     restartSnapshotPolling(true);
+  });
+  window.addEventListener("blur", () => {
+    state.windowHasFocus = false;
+  });
+  window.addEventListener("beforeunload", () => {
+    stopTitleAttentionTimer();
   });
 }
 

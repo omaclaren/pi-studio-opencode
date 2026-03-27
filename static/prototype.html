@@ -93,11 +93,17 @@
         </div>
         <div class="response-wrap">
           <div class="response-actions">
-            <div class="response-actions-row history-row">
+            <div class="response-actions-row">
               <select id="followSelect" aria-label="Auto-update response">
                 <option value="on" selected>Auto-update response: On</option>
                 <option value="off">Auto-update response: Off</option>
               </select>
+              <select id="responseHighlightSelect" aria-label="Response markdown highlighting">
+                <option value="off">Syntax highlight: Off</option>
+                <option value="on" selected>Syntax highlight: On</option>
+              </select>
+            </div>
+            <div class="response-actions-row history-row">
               <button id="historyPrevBtn" type="button" title="Show previous response in history.">◀ Prev response</button>
               <span id="historyIndexBadge" class="source-badge">History: 0/0</span>
               <button id="historyNextBtn" type="button" title="Show next response in history.">Next response ▶</button>

@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export type PrototypeThemePreference = "light" | "dark" | "system";
 export type PrototypeThemeSource = "opencode-local-state" | "opencode-config" | "ghostty-config" | "default";
@@ -26,11 +26,18 @@ type PrototypePaletteSeed = {
   warn: string;
   error: string;
   ok: string;
+  markerBg: string;
+  okBorder: string;
+  warnBorder: string;
   mdHeading: string;
   mdLink: string;
   mdLinkUrl: string;
   mdCode: string;
+  mdCodeBlock: string;
+  mdCodeBlockBorder: string;
   mdQuote: string;
+  mdQuoteBorder: string;
+  mdHr: string;
   mdListBullet: string;
   syntaxComment: string;
   syntaxKeyword: string;
@@ -38,7 +45,9 @@ type PrototypePaletteSeed = {
   syntaxVariable: string;
   syntaxString: string;
   syntaxNumber: string;
+  syntaxType: string;
   syntaxOperator: string;
+  syntaxPunctuation: string;
   border?: string;
   borderMuted?: string;
   accentSoft?: string;
@@ -70,6 +79,15 @@ export type GhosttyThemeReference = {
   dark: string | null;
 };
 
+export type PrototypeGhosttyThemeInput = {
+  background: string;
+  foreground: string;
+  cursorColor?: string;
+  selectionBackground?: string;
+  selectionForeground?: string;
+  palette: Map<number, string>;
+};
+
 type GhosttyThemeDefinition = {
   name: string;
   background?: string;
@@ -81,38 +99,55 @@ type GhosttyThemeDefinition = {
   palette: Map<number, string>;
 };
 
+export type PrototypeOpencodeThemeInput = {
+  $schema?: string;
+  defs?: Record<string, unknown>;
+  theme: Record<string, unknown>;
+};
+
+export type PrototypeOpencodeThemeMode = Exclude<PrototypeThemePreference, "system">;
+
 const BASE_DARK_PALETTE: PrototypePaletteSeed = {
-  bg: "#0f141b",
+  bg: "#0f1117",
   panel: "#171b24",
   panel2: "#11161f",
   text: "#e6edf3",
-  muted: "#9aa6b2",
-  accent: "#2f81f7",
-  warn: "#d29922",
-  error: "#ff7b72",
-  ok: "#3fb950",
-  mdHeading: "#c9dfff",
-  mdLink: "#7fb6ff",
-  mdLinkUrl: "#8fd3ff",
-  mdCode: "#f0d28c",
-  mdQuote: "#c8d1d9",
-  mdListBullet: "#7fb6ff",
-  syntaxComment: "#8b949e",
-  syntaxKeyword: "#ff7ab8",
-  syntaxFunction: "#7ee787",
-  syntaxVariable: "#79c0ff",
-  syntaxString: "#a5d6ff",
-  syntaxNumber: "#f2cc60",
-  syntaxOperator: "#c9d1d9",
-  border: "rgba(255, 255, 255, 0.08)",
-  borderMuted: "rgba(255, 255, 255, 0.08)",
-  accentSoft: "rgba(47, 129, 247, 0.14)",
-  accentSoftStrong: "rgba(47, 129, 247, 0.30)",
-  markerBorder: "rgba(47, 129, 247, 0.45)",
-  accentContrast: "#08101f",
-  errorContrast: "#210908",
+  muted: "#9aa5b1",
+  accent: "#5ea1ff",
+  warn: "#f9c74f",
+  error: "#ff6b6b",
+  ok: "#73d13d",
+  markerBg: "rgba(94, 161, 255, 0.25)",
+  okBorder: "rgba(115, 209, 61, 0.70)",
+  warnBorder: "rgba(249, 199, 79, 0.70)",
+  mdHeading: "#f0c674",
+  mdLink: "#81a2be",
+  mdLinkUrl: "#666666",
+  mdCode: "#8abeb7",
+  mdCodeBlock: "#b5bd68",
+  mdCodeBlockBorder: "#808080",
+  mdQuote: "#808080",
+  mdQuoteBorder: "#808080",
+  mdHr: "#808080",
+  mdListBullet: "#8abeb7",
+  syntaxComment: "#6A9955",
+  syntaxKeyword: "#569CD6",
+  syntaxFunction: "#DCDCAA",
+  syntaxVariable: "#9CDCFE",
+  syntaxString: "#CE9178",
+  syntaxNumber: "#B5CEA8",
+  syntaxType: "#4EC9B0",
+  syntaxOperator: "#D4D4D4",
+  syntaxPunctuation: "#D4D4D4",
+  border: "#2d3748",
+  borderMuted: "#242b38",
+  accentSoft: "rgba(94, 161, 255, 0.35)",
+  accentSoftStrong: "rgba(94, 161, 255, 0.40)",
+  markerBorder: "rgba(94, 161, 255, 0.65)",
+  accentContrast: "#0e1616",
+  errorContrast: "#0e1616",
   editorBg: "#171b24",
-  panelShadow: "0 12px 30px rgba(0, 0, 0, 0.22)",
+  panelShadow: "0 1px 2px rgba(0, 0, 0, 0.36), 0 6px 18px rgba(0, 0, 0, 0.22)",
 };
 
 const BASE_LIGHT_PALETTE: PrototypePaletteSeed = {
@@ -125,28 +160,37 @@ const BASE_LIGHT_PALETTE: PrototypePaletteSeed = {
   warn: "#9a6700",
   error: "#cf222e",
   ok: "#1a7f37",
+  markerBg: "rgba(9, 105, 218, 0.13)",
+  okBorder: "rgba(26, 127, 55, 0.55)",
+  warnBorder: "rgba(154, 103, 0, 0.55)",
   mdHeading: "#9a7326",
   mdLink: "#547da7",
   mdLinkUrl: "#767676",
   mdCode: "#5a8080",
+  mdCodeBlock: "#588458",
+  mdCodeBlockBorder: "#6c6c6c",
   mdQuote: "#6c6c6c",
+  mdQuoteBorder: "#6c6c6c",
+  mdHr: "#6c6c6c",
   mdListBullet: "#588458",
   syntaxComment: "#008000",
-  syntaxKeyword: "#0000ff",
-  syntaxFunction: "#795e26",
+  syntaxKeyword: "#0000FF",
+  syntaxFunction: "#795E26",
   syntaxVariable: "#001080",
-  syntaxString: "#a31515",
+  syntaxString: "#A31515",
   syntaxNumber: "#098658",
+  syntaxType: "#267F99",
   syntaxOperator: "#000000",
-  border: "rgba(31, 35, 40, 0.12)",
-  borderMuted: "rgba(31, 35, 40, 0.10)",
-  accentSoft: "rgba(9, 105, 218, 0.12)",
-  accentSoftStrong: "rgba(9, 105, 218, 0.20)",
-  markerBorder: "rgba(9, 105, 218, 0.30)",
+  syntaxPunctuation: "#000000",
+  border: "#d0d7de",
+  borderMuted: "#e0e6ee",
+  accentSoft: "rgba(9, 105, 218, 0.28)",
+  accentSoftStrong: "rgba(9, 105, 218, 0.35)",
+  markerBorder: "rgba(9, 105, 218, 0.45)",
   accentContrast: "#ffffff",
   errorContrast: "#ffffff",
   editorBg: "#ffffff",
-  panelShadow: "0 12px 28px rgba(15, 23, 42, 0.10)",
+  panelShadow: "0 1px 2px rgba(15, 23, 42, 0.03), 0 4px 14px rgba(15, 23, 42, 0.04)",
 };
 
 const KNOWN_THEME_FAMILIES: PrototypeThemeFamilyDefinition[] = [
@@ -779,37 +823,52 @@ async function readJsonValue(path: string): Promise<Record<string, unknown> | nu
 }
 
 async function readConfiguredTheme(): Promise<ResolvedConfiguredTheme> {
-  const localState = await readJsonValue(join(getXdgStateDirectory(), "opencode", "kv.json"));
-  const localTheme = typeof localState?.theme === "string" ? localState.theme.trim() : "";
-  const localMode = typeof localState?.theme_mode === "string" ? localState.theme_mode.trim().toLowerCase() : "";
-  if (localTheme) {
-    return {
-      raw: localTheme,
-      source: "opencode-local-state",
-      mode: localMode === "light" || localMode === "dark" ? localMode : null,
-    };
-  }
-
   const configPaths = [
     join(getXdgConfigDirectory(), "opencode", "opencode.jsonc"),
     join(getXdgConfigDirectory(), "opencode", "opencode.json"),
     join(getXdgConfigDirectory(), "opencode", "config.json"),
   ];
 
+  let configTheme = "";
+  let configMode: ResolvedConfiguredTheme["mode"] = null;
+
   for (const path of configPaths) {
     const parsed = await readJsonValue(path);
-    const configTheme = typeof parsed?.theme === "string" ? parsed.theme.trim() : "";
-    const configMode = typeof parsed?.theme_mode === "string" ? parsed.theme_mode.trim().toLowerCase() : "";
-    if (configTheme) {
-      return {
-        raw: configTheme,
-        source: "opencode-config",
-        mode: configMode === "light" || configMode === "dark" ? configMode : null,
-      };
+    const nextTheme = typeof parsed?.theme === "string" ? parsed.theme.trim() : "";
+    const nextMode = typeof parsed?.theme_mode === "string" ? parsed.theme_mode.trim().toLowerCase() : "";
+    if (!configTheme && nextTheme) {
+      configTheme = nextTheme;
+    }
+    if (!configMode && (nextMode === "light" || nextMode === "dark")) {
+      configMode = nextMode;
+    }
+    if (configTheme && configMode) {
+      break;
     }
   }
 
-  return { raw: null, source: "default", mode: null };
+  const localState = await readJsonValue(join(getXdgStateDirectory(), "opencode", "kv.json"));
+  const localTheme = typeof localState?.theme === "string" ? localState.theme.trim() : "";
+  const localMode = typeof localState?.theme_mode === "string" ? localState.theme_mode.trim().toLowerCase() : "";
+  const resolvedLocalMode = localMode === "light" || localMode === "dark" ? localMode : null;
+
+  if (configTheme) {
+    return {
+      raw: configTheme,
+      source: "opencode-config",
+      mode: resolvedLocalMode ?? configMode,
+    };
+  }
+
+  if (localTheme) {
+    return {
+      raw: localTheme,
+      source: "opencode-local-state",
+      mode: resolvedLocalMode ?? configMode,
+    };
+  }
+
+  return { raw: null, source: "default", mode: configMode };
 }
 
 async function readFirstExistingTextFile(paths: string[]): Promise<string | null> {
@@ -836,7 +895,7 @@ function normalizeThemeModeToken(value: string | null | undefined): Exclude<Prot
 
 function shouldUseGhosttyTheme(configured: ResolvedConfiguredTheme): boolean {
   const key = normalizeThemeKey(configured.raw ?? "");
-  return key === "system" || key === "opencode";
+  return key === "system" || key === "auto";
 }
 
 function getGhosttyConfigPaths(): string[] {
@@ -964,6 +1023,268 @@ async function readGhosttyThemeDefinition(themeName: string): Promise<GhosttyThe
   return definition;
 }
 
+function getOpencodeThemeNameCandidates(raw: string): string[] {
+  const trimmed = raw.trim();
+  const normalized = normalizeThemeKey(trimmed);
+  const hyphenated = normalized.replace(/\s+/g, "-");
+  return Array.from(new Set([
+    trimmed,
+    trimmed.toLowerCase(),
+    normalized,
+    hyphenated,
+  ].map((value) => value.trim()).filter(Boolean)));
+}
+
+function isPrototypeOpencodeThemeInput(value: unknown): value is PrototypeOpencodeThemeInput {
+  if (!value || typeof value !== "object") return false;
+  const theme = (value as { theme?: unknown }).theme;
+  return Boolean(theme && typeof theme === "object" && !Array.isArray(theme));
+}
+
+async function readFirstExistingJsonFile<T>(paths: string[], guard: (value: unknown) => value is T): Promise<T | null> {
+  for (const path of paths) {
+    const parsed = await readJsonValue(path);
+    if (guard(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function getPrototypeOpencodeThemeWorkspacePaths(themeName: string, directory?: string): string[] {
+  if (!directory) return [];
+  const paths: string[] = [];
+  let current = resolve(directory);
+
+  for (;;) {
+    paths.push(join(current, ".opencode", "themes", `${themeName}.json`));
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  return paths;
+}
+
+async function getPrototypeOpencodeBuiltinThemePaths(themeName: string): Promise<string[]> {
+  const cacheDir = join(homedir(), ".bun", "install", "cache");
+  const paths = [join(cacheDir, "critique", "src", "themes", `${themeName}.json`)];
+
+  try {
+    const entries = await readdir(cacheDir);
+    for (const entry of entries) {
+      if (!entry.startsWith("critique@")) continue;
+      paths.push(join(cacheDir, entry, "src", "themes", `${themeName}.json`));
+    }
+  } catch {
+    // ignore missing bun cache directories
+  }
+
+  return paths;
+}
+
+async function readPrototypeOpencodeThemeDefinition(rawThemeName: string, directory?: string): Promise<PrototypeOpencodeThemeInput | null> {
+  for (const themeName of getOpencodeThemeNameCandidates(rawThemeName)) {
+    const candidatePaths = [
+      join(getXdgConfigDirectory(), "opencode", "themes", `${themeName}.json`),
+      ...getPrototypeOpencodeThemeWorkspacePaths(themeName, directory),
+      ...(await getPrototypeOpencodeBuiltinThemePaths(themeName)),
+    ];
+    const definition = await readFirstExistingJsonFile(candidatePaths, isPrototypeOpencodeThemeInput);
+    if (definition) {
+      return definition;
+    }
+  }
+
+  return null;
+}
+
+function ansiColorCodeToHex(code: number): string {
+  const normalized = Math.max(0, Math.min(255, Math.trunc(code)));
+  const standardAnsi = [
+    "#000000",
+    "#800000",
+    "#008000",
+    "#808000",
+    "#000080",
+    "#800080",
+    "#008080",
+    "#c0c0c0",
+    "#808080",
+    "#ff0000",
+    "#00ff00",
+    "#ffff00",
+    "#0000ff",
+    "#ff00ff",
+    "#00ffff",
+    "#ffffff",
+  ];
+
+  if (normalized < 16) {
+    return standardAnsi[normalized] ?? "#808080";
+  }
+
+  if (normalized < 232) {
+    const index = normalized - 16;
+    const blue = index % 6;
+    const green = Math.floor(index / 6) % 6;
+    const red = Math.floor(index / 36);
+    const component = (value: number): number => (value === 0 ? 0 : value * 40 + 55);
+    return rgbToHex(component(red), component(green), component(blue));
+  }
+
+  const gray = (normalized - 232) * 10 + 8;
+  return rgbToHex(gray, gray, gray);
+}
+
+function isTransparentThemeColor(value: string | null | undefined): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "transparent" || normalized === "none";
+}
+
+function resolvePrototypeOpencodeThemeColor(
+  definition: PrototypeOpencodeThemeInput,
+  value: unknown,
+  mode: PrototypeOpencodeThemeMode,
+  seen = new Set<string>(),
+): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (isTransparentThemeColor(trimmed)) return "transparent";
+    if (/^#[0-9a-fA-F]{3,6}$/.test(trimmed)) return trimmed.toLowerCase();
+
+    if (definition.defs && Object.prototype.hasOwnProperty.call(definition.defs, trimmed)) {
+      const key = `def:${trimmed}`;
+      if (seen.has(key)) return null;
+      seen.add(key);
+      return resolvePrototypeOpencodeThemeColor(definition, definition.defs[trimmed], mode, seen);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(definition.theme, trimmed)) {
+      const key = `theme:${trimmed}`;
+      if (seen.has(key)) return null;
+      seen.add(key);
+      return resolvePrototypeOpencodeThemeColor(definition, definition.theme[trimmed], mode, seen);
+    }
+
+    return null;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return ansiColorCodeToHex(value);
+  }
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const variant = value as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(variant, "dark") || Object.prototype.hasOwnProperty.call(variant, "light")) {
+      return resolvePrototypeOpencodeThemeColor(definition, variant[mode] ?? variant.dark ?? variant.light, mode, seen);
+    }
+  }
+
+  return null;
+}
+
+function resolvePrototypeOpencodeThemeSlot(
+  definition: PrototypeOpencodeThemeInput,
+  key: string,
+  mode: PrototypeOpencodeThemeMode,
+): string | null {
+  return resolvePrototypeOpencodeThemeColor(definition, definition.theme[key], mode);
+}
+
+function pickSolidThemeColor(primary: string | null | undefined, fallback: string): string {
+  if (!primary || isTransparentThemeColor(primary)) return fallback;
+  return primary;
+}
+
+function buildOpencodePaletteSeed(
+  definition: PrototypeOpencodeThemeInput,
+  mode: PrototypeOpencodeThemeMode,
+): Partial<PrototypePaletteSeed> {
+  const base = mode === "light" ? BASE_LIGHT_PALETTE : BASE_DARK_PALETTE;
+  const text = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "text", mode), base.text);
+  const muted = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "textMuted", mode), base.muted);
+  const bg = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "background", mode), base.bg);
+  const panel = pickSolidThemeColor(
+    resolvePrototypeOpencodeThemeSlot(definition, "backgroundPanel", mode),
+    pickSolidThemeColor(
+      resolvePrototypeOpencodeThemeSlot(definition, "backgroundElement", mode),
+      mode === "light" ? blendHexColors(bg, text, 0.03) : blendHexColors(bg, text, 0.07),
+    ),
+  );
+  const panel2 = pickSolidThemeColor(
+    resolvePrototypeOpencodeThemeSlot(definition, "backgroundElement", mode),
+    derivePrototypePanel2Color(panel, bg, muted, mode),
+  );
+  const primary = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "primary", mode), base.accent);
+  const secondary = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "secondary", mode), primary);
+  const info = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "info", mode), secondary);
+  const warning = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "warning", mode), base.warn);
+  const error = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "error", mode), base.error);
+  const success = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "success", mode), base.ok);
+  const border = pickSolidThemeColor(
+    resolvePrototypeOpencodeThemeSlot(definition, "border", mode),
+    blendHexColors(text, bg, mode === "light" ? 0.82 : 0.76),
+  );
+  const borderSubtle = pickSolidThemeColor(
+    resolvePrototypeOpencodeThemeSlot(definition, "borderSubtle", mode),
+    blendHexColors(text, bg, mode === "light" ? 0.90 : 0.86),
+  );
+  const borderActive = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "borderActive", mode), primary);
+  const syntaxComment = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "syntaxComment", mode), muted);
+  const syntaxKeyword = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "syntaxKeyword", mode), primary);
+  const syntaxFunction = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "syntaxFunction", mode), secondary);
+  const syntaxVariable = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "syntaxVariable", mode), text);
+  const syntaxString = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "syntaxString", mode), success);
+  const syntaxNumber = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "syntaxNumber", mode), warning);
+  const syntaxType = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "syntaxType", mode), secondary);
+  const syntaxOperator = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "syntaxOperator", mode), text);
+  const syntaxPunctuation = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "syntaxPunctuation", mode), text);
+  const mdHeading = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "markdownHeading", mode), primary);
+  const mdLink = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "markdownLink", mode), primary);
+  const mdLinkText = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "markdownLinkText", mode), muted);
+  const mdCode = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "markdownCode", mode), syntaxString);
+  const mdCodeBlock = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "markdownCodeBlock", mode), text);
+  const mdQuote = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "markdownBlockQuote", mode), syntaxComment);
+  const mdHr = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "markdownHorizontalRule", mode), borderSubtle);
+  const mdListBullet = pickSolidThemeColor(resolvePrototypeOpencodeThemeSlot(definition, "markdownListItem", mode), primary);
+
+  return {
+    bg,
+    panel,
+    panel2,
+    text,
+    muted,
+    accent: primary,
+    warn: warning,
+    error,
+    ok: success,
+    mdHeading,
+    mdLink,
+    mdLinkUrl: mdLinkText,
+    mdCode,
+    mdCodeBlock,
+    mdCodeBlockBorder: borderSubtle,
+    mdQuote,
+    mdQuoteBorder: borderActive,
+    mdHr,
+    mdListBullet,
+    syntaxComment,
+    syntaxKeyword,
+    syntaxFunction,
+    syntaxVariable,
+    syntaxString,
+    syntaxNumber,
+    syntaxType,
+    syntaxOperator,
+    syntaxPunctuation,
+    border,
+    borderMuted: borderSubtle,
+    editorBg: panel,
+  };
+}
+
 function rgbToHex(r: number, g: number, b: number): string {
   return `#${[r, g, b].map((value) => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0")).join("")}`;
 }
@@ -980,18 +1301,32 @@ function blendHexColors(base: string, mix: string, amount: number): string {
   );
 }
 
+function pickPaletteColor(
+  palette: Map<number, string>,
+  indices: number[],
+  fallback: string,
+): string {
+  for (const index of indices) {
+    const value = palette.get(index);
+    if (value) return value;
+  }
+  return fallback;
+}
+
 function buildGhosttyPaletteSeed(
-  definition: GhosttyThemeDefinition,
+  definition: PrototypeGhosttyThemeInput,
   mode: Exclude<PrototypeThemePreference, "system">,
 ): Partial<PrototypePaletteSeed> {
-  const bg = definition.background!;
-  const text = definition.foreground!;
-  const muted = definition.palette.get(8) ?? blendHexColors(text, bg, 0.45);
-  const accent = definition.palette.get(12) ?? definition.palette.get(4) ?? definition.cursorColor ?? (mode === "light" ? BASE_LIGHT_PALETTE.accent : BASE_DARK_PALETTE.accent);
-  const warn = definition.palette.get(11) ?? definition.palette.get(3) ?? (mode === "light" ? BASE_LIGHT_PALETTE.warn : BASE_DARK_PALETTE.warn);
-  const error = definition.palette.get(9) ?? definition.palette.get(1) ?? (mode === "light" ? BASE_LIGHT_PALETTE.error : BASE_DARK_PALETTE.error);
-  const ok = definition.palette.get(10) ?? definition.palette.get(2) ?? (mode === "light" ? BASE_LIGHT_PALETTE.ok : BASE_DARK_PALETTE.ok);
-  const panel = blendHexColors(bg, text, mode === "light" ? 0.02 : 0.06);
+  const base = mode === "light" ? BASE_LIGHT_PALETTE : BASE_DARK_PALETTE;
+  const bg = definition.background;
+  const text = definition.foreground;
+  const muted = pickPaletteColor(definition.palette, [8, 7], blendHexColors(text, bg, 0.45));
+  const accent = pickPaletteColor(definition.palette, [4, 12, 6, 14], definition.cursorColor ?? base.accent);
+  const warn = pickPaletteColor(definition.palette, [11, 3], base.warn);
+  const error = pickPaletteColor(definition.palette, [1, 9], base.error);
+  const ok = pickPaletteColor(definition.palette, [2, 10], base.ok);
+  const keyword = pickPaletteColor(definition.palette, [5, 13], accent);
+  const panel = blendHexColors(bg, text, mode === "light" ? 0.03 : 0.07);
   const panel2 = blendHexColors(bg, text, mode === "light" ? 0.06 : 0.12);
 
   return {
@@ -1004,27 +1339,49 @@ function buildGhosttyPaletteSeed(
     warn,
     error,
     ok,
-    mdHeading: definition.palette.get(13) ?? accent,
-    mdLink: definition.palette.get(12) ?? accent,
-    mdLinkUrl: definition.palette.get(14) ?? definition.palette.get(12) ?? accent,
-    mdCode: definition.palette.get(11) ?? warn,
+    mdHeading: keyword,
+    mdLink: accent,
+    mdLinkUrl: muted,
+    mdCode: ok,
+    mdCodeBlock: ok,
+    mdCodeBlockBorder: muted,
     mdQuote: muted,
-    mdListBullet: definition.palette.get(14) ?? ok,
+    mdQuoteBorder: accent,
+    mdHr: muted,
+    mdListBullet: accent,
     syntaxComment: muted,
-    syntaxKeyword: definition.palette.get(13) ?? accent,
-    syntaxFunction: definition.palette.get(14) ?? accent,
-    syntaxVariable: definition.palette.get(12) ?? accent,
-    syntaxString: definition.palette.get(10) ?? ok,
-    syntaxNumber: definition.palette.get(11) ?? warn,
+    syntaxKeyword: keyword,
+    syntaxFunction: accent,
+    syntaxVariable: text,
+    syntaxString: ok,
+    syntaxNumber: warn,
+    syntaxType: accent,
     syntaxOperator: text,
+    syntaxPunctuation: text,
     editorBg: panel,
+    border: blendHexColors(text, bg, mode === "light" ? 0.82 : 0.76),
+    borderMuted: blendHexColors(text, bg, mode === "light" ? 0.90 : 0.86),
   };
 }
 
-async function buildGhosttyThemeDescriptor(configured: ResolvedConfiguredTheme): Promise<PrototypeThemeDescriptor | null> {
-  if (!shouldUseGhosttyTheme(configured)) return null;
+export function buildPrototypeThemeVarsFromGhosttyTheme(
+  definition: PrototypeGhosttyThemeInput,
+  mode: Exclude<PrototypeThemePreference, "system">,
+): PrototypeThemeRecord {
+  return buildThemeVars(mode, buildGhosttyPaletteSeed(definition, mode));
+}
 
-  const reference = await readGhosttyThemeReference();
+export function buildPrototypeThemeVarsFromOpencodeTheme(
+  definition: PrototypeOpencodeThemeInput,
+  mode: PrototypeOpencodeThemeMode,
+): PrototypeThemeRecord {
+  return buildThemeVars(mode, buildOpencodePaletteSeed(definition, mode));
+}
+
+async function buildGhosttyThemeDescriptor(configured: ResolvedConfiguredTheme): Promise<PrototypeThemeDescriptor | null> {
+  const reference = shouldUseGhosttyTheme(configured)
+    ? await readGhosttyThemeReference()
+    : (configured.raw ? parseGhosttyThemeReference(configured.raw) : null);
   if (!reference) return null;
 
   const effectiveMode = configured.mode;
@@ -1039,33 +1396,64 @@ async function buildGhosttyThemeDescriptor(configured: ResolvedConfiguredTheme):
   const lightTheme = lightName ? await readGhosttyThemeDefinition(lightName) : null;
   const darkTheme = darkName ? await readGhosttyThemeDefinition(darkName) : null;
   const currentTheme = currentName ? await readGhosttyThemeDefinition(currentName) : null;
-  const lightFamily = resolveThemeFamily(lightName ?? null);
-  const darkFamily = resolveThemeFamily(darkName ?? null);
-  const currentFamily = resolveThemeFamily(currentName ?? null);
 
-  if (!lightTheme && !darkTheme && !currentTheme && !lightFamily && !darkFamily && !currentFamily) {
+  if (!lightTheme && !darkTheme && !currentTheme) {
     return null;
   }
 
-  const currentLightSeed = getThemeFamilySeed(currentFamily, "light")
-    ?? (currentTheme ? buildGhosttyPaletteSeed(currentTheme, "light") : undefined);
-  const currentDarkSeed = getThemeFamilySeed(currentFamily, "dark")
-    ?? (currentTheme ? buildGhosttyPaletteSeed(currentTheme, "dark") : undefined);
-  const lightSeed = getThemeFamilySeed(lightFamily, "light")
-    ?? (lightTheme ? buildGhosttyPaletteSeed(lightTheme, "light") : undefined)
-    ?? (normalizeThemeModeToken(effectiveMode) === "light" ? currentLightSeed : undefined);
-  const darkSeed = getThemeFamilySeed(darkFamily, "dark")
-    ?? (darkTheme ? buildGhosttyPaletteSeed(darkTheme, "dark") : undefined)
-    ?? (normalizeThemeModeToken(effectiveMode) === "dark" ? currentDarkSeed : undefined);
+  const inferredPreference = effectiveMode ?? inferThemePreference(currentName ?? configured.raw);
+  const singleThemeReference = Boolean(reference.single) && lightName === darkName;
 
-  const family = currentFamily?.id ?? lightFamily?.id ?? darkFamily?.id ?? null;
+  let lightSeed = lightTheme ? buildGhosttyPaletteSeed(lightTheme as PrototypeGhosttyThemeInput, "light") : undefined;
+  let darkSeed = darkTheme ? buildGhosttyPaletteSeed(darkTheme as PrototypeGhosttyThemeInput, "dark") : undefined;
+
+  if (singleThemeReference && currentTheme) {
+    if (inferredPreference === "light") {
+      lightSeed = buildGhosttyPaletteSeed(currentTheme as PrototypeGhosttyThemeInput, "light");
+      darkSeed = undefined;
+    } else if (inferredPreference === "dark") {
+      lightSeed = undefined;
+      darkSeed = buildGhosttyPaletteSeed(currentTheme as PrototypeGhosttyThemeInput, "dark");
+    } else {
+      lightSeed = buildGhosttyPaletteSeed(currentTheme as PrototypeGhosttyThemeInput, "light");
+      darkSeed = buildGhosttyPaletteSeed(currentTheme as PrototypeGhosttyThemeInput, "dark");
+    }
+  }
+
   return {
     raw: currentName ?? configured.raw,
-    preference: effectiveMode ?? (lightSeed && darkSeed ? "system" : resolveThemePreference(currentName ?? configured.raw, currentFamily)),
-    source: "ghostty-config",
-    family,
+    preference: inferredPreference === "system" && lightSeed && darkSeed ? "system" : inferredPreference,
+    source: shouldUseGhosttyTheme(configured) ? "ghostty-config" : configured.source,
+    family: null,
     lightVars: buildThemeVars("light", lightSeed),
     darkVars: buildThemeVars("dark", darkSeed),
+  };
+}
+
+async function buildOpencodeThemeDescriptor(
+  configured: ResolvedConfiguredTheme,
+  directory?: string,
+): Promise<PrototypeThemeDescriptor | null> {
+  const raw = configured.raw?.trim();
+  const normalized = normalizeThemeKey(raw ?? "");
+  if (!raw || normalized === "system" || normalized === "auto") {
+    return null;
+  }
+
+  const definition = await readPrototypeOpencodeThemeDefinition(raw, directory);
+  if (!definition) {
+    return null;
+  }
+
+  const preference = configured.mode ?? inferThemePreference(raw);
+
+  return {
+    raw,
+    preference,
+    source: configured.source,
+    family: null,
+    lightVars: buildPrototypeThemeVarsFromOpencodeTheme(definition, "light"),
+    darkVars: buildPrototypeThemeVarsFromOpencodeTheme(definition, "dark"),
   };
 }
 
@@ -1180,12 +1568,40 @@ function buildThemeVars(mode: Exclude<PrototypeThemePreference, "system">, overr
   const borderMuted = palette.borderMuted ?? withAlpha(palette.text, mode === "light" ? 0.10 : 0.08, base.borderMuted ?? "rgba(0, 0, 0, 0.08)");
   const accentSoft = explicit.accentSoft ?? withAlpha(palette.accent, mode === "light" ? 0.28 : 0.35, base.accentSoft ?? "rgba(0, 0, 0, 0.12)");
   const accentSoftStrong = explicit.accentSoftStrong ?? withAlpha(palette.accent, mode === "light" ? 0.35 : 0.40, base.accentSoftStrong ?? "rgba(0, 0, 0, 0.22)");
-  const markerBorder = explicit.markerBorder ?? withAlpha(palette.accent, mode === "light" ? 0.30 : 0.45, base.markerBorder ?? "rgba(0, 0, 0, 0.3)");
+  const hasOverride = Object.keys(explicit).length > 0;
+  const markerBg = explicit.markerBg ?? withAlpha(palette.accent, mode === "light" ? 0.13 : 0.25, base.markerBg);
+  const markerBorder = explicit.markerBorder ?? withAlpha(palette.accent, mode === "light" ? 0.45 : 0.65, base.markerBorder ?? "rgba(0, 0, 0, 0.3)");
+  const okBorder = explicit.okBorder ?? withAlpha(palette.ok, mode === "light" ? 0.55 : 0.70, base.okBorder);
+  const warnBorder = explicit.warnBorder ?? withAlpha(palette.warn, mode === "light" ? 0.55 : 0.70, base.warnBorder);
+  const mdCodeBlock = explicit.mdCodeBlock ?? (hasOverride
+    ? blendHexColors(palette.mdCode, palette.text, mode === "light" ? 0.18 : 0.28)
+    : palette.mdCodeBlock);
+  const mdCodeBlockBorder = explicit.mdCodeBlockBorder ?? (hasOverride
+    ? blendHexColors(palette.muted, palette.panel, mode === "light" ? 0.12 : 0.18)
+    : palette.mdCodeBlockBorder);
+  const mdQuoteBorder = explicit.mdQuoteBorder ?? (hasOverride
+    ? blendHexColors(palette.mdQuote, palette.panel, mode === "light" ? 0.05 : 0.10)
+    : palette.mdQuoteBorder);
+  const mdHr = explicit.mdHr ?? (hasOverride ? mdQuoteBorder : palette.mdHr);
+  const syntaxType = explicit.syntaxType ?? (hasOverride
+    ? blendHexColors(palette.syntaxFunction, palette.syntaxVariable, 0.45)
+    : palette.syntaxType);
+  const syntaxPunctuation = explicit.syntaxPunctuation ?? (hasOverride ? palette.syntaxOperator : palette.syntaxPunctuation);
   const accentContrast = explicit.accentContrast ?? defaultContrastColor(palette.accent, "#08101f", "#ffffff");
   const errorContrast = explicit.errorContrast ?? defaultContrastColor(palette.error, "#210908", "#ffffff");
   const panelShadow = explicit.panelShadow ?? (mode === "light"
-    ? "0 12px 28px rgba(15, 23, 42, 0.10)"
-    : "0 12px 30px rgba(0, 0, 0, 0.22)");
+    ? "0 1px 2px rgba(15, 23, 42, 0.03), 0 4px 14px rgba(15, 23, 42, 0.04)"
+    : "0 1px 2px rgba(0, 0, 0, 0.36), 0 6px 18px rgba(0, 0, 0, 0.22)");
+  const blockquoteBg = withAlpha(
+    mdQuoteBorder,
+    mode === "light" ? 0.10 : 0.16,
+    mode === "light" ? "rgba(15, 23, 42, 0.04)" : "rgba(255, 255, 255, 0.05)",
+  );
+  const tableAltBg = withAlpha(
+    mdCodeBlockBorder,
+    mode === "light" ? 0.10 : 0.14,
+    mode === "light" ? "rgba(15, 23, 42, 0.03)" : "rgba(255, 255, 255, 0.04)",
+  );
 
   return {
     "--bg": palette.bg,
@@ -1205,12 +1621,20 @@ function buildThemeVars(mode: Exclude<PrototypeThemePreference, "system">, overr
     "--warn": palette.warn,
     "--error": palette.error,
     "--error-contrast": errorContrast,
+    "--marker-bg": markerBg,
+    "--marker-border": markerBorder,
+    "--ok-border": okBorder,
+    "--warn-border": warnBorder,
     "--panel-shadow": panelShadow,
     "--md-heading": palette.mdHeading,
     "--md-link": palette.mdLink,
     "--md-link-url": palette.mdLinkUrl,
     "--md-code": palette.mdCode,
+    "--md-codeblock": mdCodeBlock,
+    "--md-codeblock-border": mdCodeBlockBorder,
     "--md-quote": palette.mdQuote,
+    "--md-quote-border": mdQuoteBorder,
+    "--md-hr": mdHr,
     "--md-list-bullet": palette.mdListBullet,
     "--syntax-comment": palette.syntaxComment,
     "--syntax-keyword": palette.syntaxKeyword,
@@ -1218,8 +1642,11 @@ function buildThemeVars(mode: Exclude<PrototypeThemePreference, "system">, overr
     "--syntax-variable": palette.syntaxVariable,
     "--syntax-string": palette.syntaxString,
     "--syntax-number": palette.syntaxNumber,
+    "--syntax-type": syntaxType,
     "--syntax-operator": palette.syntaxOperator,
-    "--marker-border": markerBorder,
+    "--syntax-punctuation": syntaxPunctuation,
+    "--blockquote-bg": blockquoteBg,
+    "--table-alt-bg": tableAltBg,
   };
 }
 
@@ -1235,16 +1662,15 @@ export function buildPrototypeThemeDescriptor(
   modeOverride?: Exclude<PrototypeThemePreference, "system"> | null,
 ): PrototypeThemeDescriptor {
   const normalizedRaw = typeof raw === "string" && raw.trim() ? raw.trim() : null;
-  const family = resolveThemeFamily(normalizedRaw);
-  const inferredPreference = resolveThemePreference(normalizedRaw, family, modeOverride);
-  const lightVars = buildThemeVars("light", family?.light);
-  const darkVars = buildThemeVars("dark", family?.dark);
+  const inferredPreference = modeOverride ?? inferThemePreference(normalizedRaw);
+  const lightVars = buildThemeVars("light", undefined);
+  const darkVars = buildThemeVars("dark", undefined);
 
   return {
     raw: normalizedRaw,
     preference: inferredPreference,
     source,
-    family: family?.id ?? null,
+    family: null,
     darkVars,
     lightVars,
   };
@@ -1265,8 +1691,12 @@ export function buildPrototypeThemeStylesheet(theme: PrototypeThemeDescriptor): 
   return `:root {\n  color-scheme: dark;\n${darkBlock}\n}\n@media (prefers-color-scheme: light) {\n  :root {\n    color-scheme: light;\n${lightBlock}\n  }\n}`;
 }
 
-export async function readPrototypeThemeDescriptor(): Promise<PrototypeThemeDescriptor> {
+export async function readPrototypeThemeDescriptor(directory?: string): Promise<PrototypeThemeDescriptor> {
   const configured = await readConfiguredTheme();
+  const opencodeTheme = await buildOpencodeThemeDescriptor(configured, directory);
+  if (opencodeTheme) {
+    return opencodeTheme;
+  }
   const ghosttyTheme = await buildGhosttyThemeDescriptor(configured);
   if (ghosttyTheme) {
     return ghosttyTheme;

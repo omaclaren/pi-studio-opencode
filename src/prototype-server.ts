@@ -791,7 +791,21 @@ export async function startPrototypeServer(
 ): Promise<PrototypeServerInstance> {
   const serverStartedAt = Date.now();
   const accessToken = createPrototypeAccessToken();
-  const theme = await readPrototypeThemeDescriptor();
+  let theme = await readPrototypeThemeDescriptor(options.directory);
+  let themeReadAt = Date.now();
+  const refreshTheme = async (force = false): Promise<PrototypeThemeDescriptor> => {
+    const now = Date.now();
+    if (!force && now - themeReadAt < 1000) {
+      return theme;
+    }
+    try {
+      theme = await readPrototypeThemeDescriptor(options.directory);
+      themeReadAt = now;
+    } catch {
+      // keep the last successfully loaded theme
+    }
+    return theme;
+  };
   const logLines: Array<{ at: number; line: string }> = [];
   let activeTurn: PrototypeTurnRecord | null = null;
   let lastCompletedTurn: PrototypeTurnRecord | null = null;
@@ -983,8 +997,9 @@ export async function startPrototypeServer(
           respondInvalidPrototypeToken(response);
           return;
         }
+        const pageTheme = await refreshTheme(true);
         response.setHeader("Cache-Control", "no-store");
-        sendText(response, 200, await buildPrototypeHtml(theme, accessToken), "text/html; charset=utf-8");
+        sendText(response, 200, await buildPrototypeHtml(pageTheme, accessToken), "text/html; charset=utf-8");
         return;
       }
 
@@ -1002,6 +1017,7 @@ export async function startPrototypeServer(
           respondInvalidPrototypeToken(response);
           return;
         }
+        await refreshTheme();
       }
 
       if (request.method === "GET" && url.pathname === "/api/snapshot") {
