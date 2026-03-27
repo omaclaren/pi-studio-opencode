@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { resolve } from "node:path";
+import { runInstallCli } from "./install.js";
 import { openBrowserUrl } from "./open-browser.js";
 import { startPrototypeServer, type PrototypeServerOptions } from "./prototype-server.js";
 
@@ -68,9 +69,16 @@ function parseArgs(argv: string[]): LauncherOptions {
 }
 
 function printUsageAndExit(): never {
-  console.log(`Usage: pi-studio-opencode [options]
+  console.log(`Usage:
+  pi-studio-opencode install [options]
+  pi-studio-opencode [launcher options]
 
-Options:
+Install options:
+  --project [path]      Install into .opencode/opencode.jsonc for the current directory or the given path
+  --config <path>       Install into an explicit OpenCode config file
+  --plugin <spec>       Plugin spec to write (default: pi-studio-opencode@latest)
+
+Launcher options:
   --directory <path>    Project directory / working directory
   --base-url <url>      Use an existing opencode server
   --session <id>        Reuse an existing opencode session
@@ -78,12 +86,25 @@ Options:
   --host <host>         HTTP bind host for Studio (default: 127.0.0.1)
   --port <port>         HTTP bind port for Studio (default: 0 = auto-select)
   --no-open             Start Studio without opening a browser automatically
+  --help, -h            Show this help
 `);
   process.exit(0);
 }
 
 async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const [subcommand, ...rest] = argv;
+
+  if (subcommand === "install") {
+    await runInstallCli(rest);
+    return;
+  }
+
+  if (subcommand === "--help" || subcommand === "-h") {
+    printUsageAndExit();
+  }
+
+  const options = parseArgs(argv);
   const instance = await startPrototypeServer(options);
 
   const shutdown = async (): Promise<void> => {

@@ -1,7 +1,17 @@
 {
   "name": "pi-studio-opencode",
-  "private": true,
+  "version": "0.1.0",
+  "description": "OpenCode plug-in adaptation of pi-studio with a browser-based two-pane Studio workspace",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omaclaren/pi-studio-opencode.git"
+  },
+  "homepage": "https://github.com/omaclaren/pi-studio-opencode#readme",
+  "bugs": {
+    "url": "https://github.com/omaclaren/pi-studio-opencode/issues"
+  },
   "main": "./dist/opencode-plugin.js",
   "types": "./dist/opencode-plugin.d.ts",
   "exports": {
@@ -22,7 +32,8 @@
     "static",
     "examples",
     "README.md",
-    "ARCHITECTURE.md"
+    "ARCHITECTURE.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -33,7 +44,8 @@
     "host-demo": "tsx src/demo-host.ts",
     "pi-host-demo": "tsx src/demo-host-pi.ts",
     "prototype": "tsx src/prototype-server.ts",
-    "launch": "tsx src/launcher.ts"
+    "launch": "tsx src/launcher.ts",
+    "prepublishOnly": "npm run check && npm test && npm run build"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.2.27",
@@ -43,5 +55,14 @@
     "@types/node": "^22.15.30",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
-  }
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "studio",
+    "pi-studio",
+    "browser-workspace",
+    "markdown",
+    "latex"
+  ]
 }
