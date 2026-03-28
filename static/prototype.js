@@ -106,6 +106,7 @@ const elements = {
   saveAsBtn: document.getElementById("saveAsBtn"),
   saveBtn: document.getElementById("saveBtn"),
   loadFileBtn: document.getElementById("loadFileBtn"),
+  loadGitDiffBtn: document.getElementById("loadGitDiffBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   diagnosticsBtn: document.getElementById("diagnosticsBtn"),
   sourceBadge: document.getElementById("sourceBadge"),
@@ -1670,6 +1671,11 @@ function updatePendingResponseScrollReset(display) {
   state.lastResponseIdentityKey = nextKey;
 }
 
+function shouldUseCodePreviewForLanguage(language) {
+  const normalized = normalizeFenceLanguage(language);
+  return Boolean(normalized) && normalized !== "markdown" && normalized !== "latex";
+}
+
 function getPreviewSource() {
   if (state.rightView === "editor-preview") {
     const markdown = prepareEditorTextForPreview(elements.promptInput.value || "");
@@ -1678,11 +1684,15 @@ function getPreviewSource() {
     const suffix = latest
       ? (latestTime ? ` · response updated ${latestTime}` : " · response available")
       : "";
+    const previewLanguage = String(state.editorLanguage || "");
+    const renderKind = shouldUseCodePreviewForLanguage(previewLanguage) ? "code" : "pandoc";
     return {
       mode: "editor-preview",
+      renderKind,
+      highlightLanguage: previewLanguage,
       markdown,
       emptyMessage: "Editor is empty.",
-      key: `editor-preview\u0000${markdown}`,
+      key: `editor-preview\u0000${renderKind}\u0000${previewLanguage}\u0000${markdown}`,
       referenceLabel: `Previewing: editor text${suffix}`,
       previewWarning: "",
     };
@@ -1695,6 +1705,8 @@ function getPreviewSource() {
   const previewMarkdown = state.annotationsEnabled ? display.markdown : stripAnnotationMarkers(display.markdown);
   return {
     mode: "preview",
+    renderKind: "pandoc",
+    highlightLanguage: "",
     markdown: previewMarkdown,
     emptyMessage: display.text,
     key: `preview\u0000${display.kind}\u0000${responseId}\u0000${previewMarkdown}\u0000${display.previewWarning || ""}`,
@@ -1796,6 +1808,20 @@ async function renderResponsePreviewNow() {
   elements.referenceBadge.textContent = source.referenceLabel;
 
   try {
+    if (source.renderKind === "code") {
+      if (nonce !== state.responsePreviewRenderNonce || state.rightView !== source.mode) return;
+      finishPreviewRender(elements.responseView);
+      setResponseViewHtml(`<div class="response-markdown-highlight">${highlightCode(source.markdown, source.highlightLanguage)}</div>`);
+      if (source.previewWarning) {
+        appendPreviewWarning(elements.responseView, source.previewWarning);
+      }
+      applyPendingResponseScrollReset();
+      scheduleResponsePaneRepaintNudge();
+      elements.referenceBadge.textContent = source.referenceLabel;
+      state.currentRenderedPreviewKey = source.key;
+      return;
+    }
+
     const renderedHtml = await renderMarkdownWithPandoc(source.markdown);
     if (nonce !== state.responsePreviewRenderNonce || state.rightView !== source.mode) return;
     finishPreviewRender(elements.responseView);
@@ -2564,6 +2590,7 @@ function updateActionState() {
   if (elements.saveAsBtn) elements.saveAsBtn.disabled = state.busy || !hasPrompt;
   if (elements.saveBtn) elements.saveBtn.disabled = state.busy || !hasPrompt || !state.sourcePath;
   if (elements.loadFileBtn) elements.loadFileBtn.disabled = state.busy;
+  if (elements.loadGitDiffBtn) elements.loadGitDiffBtn.disabled = state.busy;
   if (elements.resourceDirBtn) elements.resourceDirBtn.disabled = state.busy || Boolean(state.sourcePath);
   if (elements.insertHeaderBtn) elements.insertHeaderBtn.disabled = state.busy;
   if (elements.annotationModeSelect) elements.annotationModeSelect.disabled = state.busy;
@@ -2765,6 +2792,15 @@ function setEditorText(text, originLabel, options = {}) {
   render();
 }
 
+function getEditorContextPaths() {
+  const sourcePath = state.sourcePath || "";
+  const baseDir = (!sourcePath && state.workingDir) ? state.workingDir : "";
+  return {
+    sourcePath,
+    baseDir,
+  };
+}
+
 function describeSourceForAnnotation() {
   if (state.sourcePath) {
     return `file ${state.sourcePath.split(/[\\/]/).pop() || state.sourcePath}`;
@@ -2836,6 +2872,35 @@ function buildSuggestedSavePath() {
     return state.workingDir.replace(/\/$/, "") + "/" + baseName;
   }
   return "./" + baseName;
+}
+
+async function loadGitDiff() {
+  try {
+    const context = getEditorContextPaths();
+    const data = await postJson("/api/git-diff", {
+      sourcePath: context.sourcePath || undefined,
+      baseDir: context.baseDir || undefined,
+    });
+
+    if (!data || data.ok === false) {
+      const level = data?.level === "error"
+        ? "error"
+        : (data?.level === "warning" ? "warning" : "warning");
+      setTransientStatus(data?.message || "No git diff available.", level);
+      return;
+    }
+
+    const label = String(data.label || "git diff").trim() || "git diff";
+    const repoRoot = String(data.repoRoot || context.baseDir || "").trim();
+    setEditorText(String(data.content || ""), label, {
+      sourcePath: null,
+      workingDir: repoRoot,
+      language: "diff",
+    });
+    setTransientStatus(data.message || "Loaded current git diff into Studio.", "success");
+  } catch (error) {
+    setTransientStatus(error instanceof Error ? error.message : String(error), "error");
+  }
 }
 
 async function loadFileContent() {
@@ -3374,6 +3439,9 @@ function wireEvents() {
   }
   if (elements.loadFileBtn) {
     elements.loadFileBtn.addEventListener("click", () => void loadFileContent());
+  }
+  if (elements.loadGitDiffBtn) {
+    elements.loadGitDiffBtn.addEventListener("click", () => void loadGitDiff());
   }
   if (elements.resourceDirBtn) {
     elements.resourceDirBtn.addEventListener("click", () => chooseWorkingDir());

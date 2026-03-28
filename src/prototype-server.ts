@@ -16,6 +16,7 @@ import {
   type PrototypeCritiqueLens,
   type PrototypeRequestedCritiqueLens,
 } from "./prototype-critique.js";
+import { readPrototypeGitDiff } from "./prototype-git-diff.js";
 import type { StudioHost, StudioHostCapabilities, StudioHostHistoryItem, StudioHostState } from "./studio-host-types.js";
 
 export type PrototypeModelCatalogEntry = {
@@ -1103,6 +1104,26 @@ export async function startPrototypeServer(
 
       if (request.method === "GET" && url.pathname === "/api/snapshot") {
         sendJson(response, 200, buildSnapshot());
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/git-diff") {
+        const payload = await readJsonBody<{ sourcePath?: string; baseDir?: string }>(request);
+        const sourcePath = typeof payload.sourcePath === "string" ? payload.sourcePath : undefined;
+        const baseDir = typeof payload.baseDir === "string" ? payload.baseDir : undefined;
+        const resolvedBaseDir = resolvePrototypeBaseDir(sourcePath, baseDir, options.directory);
+        const diffResult = readPrototypeGitDiff(resolvedBaseDir);
+        if (!diffResult.ok) {
+          sendJson(response, 200, { ok: false, level: diffResult.level, message: diffResult.message });
+          return;
+        }
+        sendJson(response, 200, {
+          ok: true,
+          content: diffResult.text,
+          label: diffResult.label,
+          repoRoot: diffResult.repoRoot,
+          message: "Loaded current git diff into Studio.",
+        });
         return;
       }
 
