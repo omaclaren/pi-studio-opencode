@@ -22,11 +22,13 @@ test("StudioCore tracks direct run chain, queued steering, and idle completion",
   const first = core.completeActiveResponse({
     responseMessageId: "assistant-1",
     responseText: "first response",
+    responseThinking: "first thinking",
     completedAt: 101,
   });
   assert.ok(first);
   assert.equal(first?.userMessageId, "user-1");
   assert.equal(first?.responseText, "first response");
+  assert.equal(first?.responseThinking, "first thinking");
   assert.equal(core.getHistory().length, 1);
   assert.equal(core.getState().queueLength, 2);
   assert.equal(core.getState().runState, "running");
@@ -127,6 +129,7 @@ test("StudioCore can record externally observed terminal responses", () => {
     userMessageId: "user-ext-1",
     responseMessageId: "assistant-ext-1",
     responseText: "external response",
+    responseThinking: "external thinking",
     submittedAt: 300,
     completedAt: 345,
   });
@@ -138,6 +141,7 @@ test("StudioCore can record externally observed terminal responses", () => {
   assert.equal(observed.userMessageId, "user-ext-1");
   assert.equal(observed.responseMessageId, "assistant-ext-1");
   assert.equal(observed.responseText, "external response");
+  assert.equal(observed.responseThinking, "external thinking");
   assert.equal(observed.completedAt, 345);
   assert.equal(core.getHistory().length, 1);
   assert.equal(core.getState().runState, "idle");

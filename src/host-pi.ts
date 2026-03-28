@@ -78,6 +78,31 @@ function extractAssistantText(message: unknown): string | null {
   return normalizePromptText(blocks.join("\n\n"));
 }
 
+function extractAssistantThinking(message: unknown): string | null {
+  const msg = message as {
+    role?: string;
+    content?: Array<{ type?: string; text?: string | { value?: string } }> | string;
+  };
+
+  if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) return null;
+
+  const blocks: string[] = [];
+  for (const part of msg.content) {
+    if (!part || typeof part !== "object") continue;
+    const partType = typeof part.type === "string" ? part.type : "";
+    if (partType !== "thinking") continue;
+    if (typeof part.text === "string") {
+      blocks.push(part.text);
+      continue;
+    }
+    if (part.text && typeof part.text === "object" && typeof part.text.value === "string") {
+      blocks.push(part.text.value);
+    }
+  }
+
+  return normalizePromptText(blocks.join("\n\n"));
+}
+
 function extractUserText(message: unknown): string | null {
   const msg = message as {
     role?: string;
@@ -284,12 +309,14 @@ export class PiStudioHost implements StudioHost {
     if (extractStopReason(event.message) === "toolUse") return;
 
     const assistantText = extractAssistantText(event.message);
+    const assistantThinking = extractAssistantThinking(event.message);
     const assistantError = extractAssistantError(event.message);
-    if (!assistantText && !assistantError) return;
+    if (!assistantText && !assistantThinking && !assistantError) return;
 
     this.core.completeActiveResponse({
       responseMessageId: extractMessageId(event.message),
       responseText: assistantText ?? "",
+      responseThinking: assistantThinking ?? "",
       responseError: assistantError,
       completedAt: Date.now(),
     });

@@ -338,6 +338,7 @@ export class PluginBackedOpencodeStudioHost implements StudioHost {
     const completed = this.core.completeActiveResponse({
       responseMessageId: bound.response?.id ?? null,
       responseText: bound.response?.text ?? "",
+      responseThinking: bound.response?.thinking ?? "",
       responseError: bound.response?.error ?? (stopping ? "Aborted" : undefined),
       completedAt: bound.response?.completed ?? Date.now(),
     });
@@ -429,6 +430,7 @@ export class PluginBackedOpencodeStudioHost implements StudioHost {
         userMessageId: item.userMessageId,
         responseMessageId: item.response.id,
         responseText: item.response.text,
+        responseThinking: item.response.thinking,
         responseError: item.response.error,
         submittedAt: item.submittedAt,
         completedAt: item.response.completed ?? item.response.created,

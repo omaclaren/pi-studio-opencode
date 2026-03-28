@@ -20,6 +20,7 @@ type StudioCoreSubmission = {
   userMessageId?: string;
   responseMessageId?: string;
   responseText?: string;
+  responseThinking?: string;
   responseError?: string;
   completedAt?: number;
 };
@@ -40,6 +41,7 @@ export type StudioCoreOptions = {
 export type StudioCoreResponsePayload = {
   responseMessageId?: string | null;
   responseText?: string | null;
+  responseThinking?: string | null;
   responseError?: string;
   completedAt?: number;
 };
@@ -181,6 +183,7 @@ export class StudioCore {
 
     active.responseMessageId = payload.responseMessageId ?? undefined;
     active.responseText = payload.responseText ?? "";
+    active.responseThinking = payload.responseThinking ?? "";
     active.responseError = payload.responseError;
     active.completedAt = payload.completedAt ?? Date.now();
 
@@ -196,6 +199,7 @@ export class StudioCore {
     userMessageId?: string | null;
     responseMessageId?: string | null;
     responseText?: string | null;
+    responseThinking?: string | null;
     responseError?: string;
     submittedAt?: number;
     completedAt?: number;
@@ -223,6 +227,7 @@ export class StudioCore {
       userMessageId: input.userMessageId ?? undefined,
       responseMessageId: input.responseMessageId ?? undefined,
       responseText: input.responseText ?? "",
+      responseThinking: input.responseThinking ?? "",
       responseError: input.responseError,
       completedAt,
     };
@@ -303,6 +308,7 @@ export class StudioCore {
       userMessageId: submission.userMessageId ?? null,
       responseMessageId: submission.responseMessageId ?? null,
       responseText: submission.responseText ?? null,
+      responseThinking: submission.responseThinking ?? null,
       responseError: submission.responseError,
       completedAt: submission.completedAt,
     };

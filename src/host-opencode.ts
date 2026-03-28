@@ -88,6 +88,7 @@ export type ObservedSessionMessage = {
   completed?: number;
   error?: string;
   text: string;
+  thinking?: string;
   parentMessageId?: string | null;
 };
 
@@ -146,6 +147,11 @@ export function normalizeSessionMessageRecord(record: SessionMessageRecord): Nor
     .map((part) => part.text)
     .join("\n\n")
     .trim();
+  const thinking = record.parts
+    .filter((part) => part.type === "reasoning")
+    .map((part) => part.text)
+    .join("\n\n")
+    .trim();
   const parentMessageId = typeof (record.info as { parentID?: unknown }).parentID === "string"
     ? (record.info as { parentID: string }).parentID
     : undefined;
@@ -159,6 +165,7 @@ export function normalizeSessionMessageRecord(record: SessionMessageRecord): Nor
       ? `${record.info.error.name}: ${record.info.error.data.message ?? "unknown error"}`
       : undefined,
     text,
+    thinking,
     parentMessageId,
   };
 }
@@ -175,7 +182,7 @@ export function sortObservedMessages(messages: ReadonlyArray<ObservedSessionMess
 }
 
 export function hasObservedAssistantContent(message: ObservedSessionMessage): boolean {
-  return message.role === "assistant" && Boolean(message.text || message.error);
+  return message.role === "assistant" && Boolean(message.text || message.thinking || message.error);
 }
 
 export function resolveObservedRootUserMessage(
@@ -678,6 +685,7 @@ export class OpencodeStudioHost implements StudioHost {
     const completed = this.core.completeActiveResponse({
       responseMessageId: bound.response?.id ?? null,
       responseText: bound.response?.text ?? "",
+      responseThinking: bound.response?.thinking ?? "",
       responseError: bound.response?.error ?? (stopping ? "Aborted" : undefined),
       completedAt: bound.response?.completed ?? Date.now(),
     });
@@ -769,6 +777,7 @@ export class OpencodeStudioHost implements StudioHost {
         userMessageId: item.userMessageId,
         responseMessageId: item.response.id,
         responseText: item.response.text,
+        responseThinking: item.response.thinking,
         responseError: item.response.error,
         submittedAt: item.submittedAt,
         completedAt: item.response.completed ?? item.response.created,

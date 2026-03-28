@@ -34,6 +34,7 @@ export type StudioHostHistoryItem = {
   userMessageId: string | null;
   responseMessageId: string | null;
   responseText: string | null;
+  responseThinking?: string | null;
   responseError?: string;
   completedAt?: number;
 };

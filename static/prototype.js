@@ -92,7 +92,11 @@ Object.keys(LANG_EXT_MAP).forEach((lang) => {
   });
 });
 const HIGHLIGHTED_LANGUAGES = ["markdown", "javascript", "typescript", "python", "bash", "json", "rust", "c", "cpp", "julia", "fortran", "r", "matlab", "latex", "diff"];
-const SUPPORTED_LANGUAGES = Object.keys(LANG_EXT_MAP);
+const SUPPORTED_LANGUAGES = Object.keys(LANG_EXT_MAP).sort((a, b) => {
+  const labelA = String(LANG_EXT_MAP[a]?.label || a);
+  const labelB = String(LANG_EXT_MAP[b]?.label || b);
+  return labelA.localeCompare(labelB);
+});
 
 const elements = {
   leftPane: document.getElementById("leftPane"),
@@ -1611,7 +1615,8 @@ function getPreviewSource() {
     };
   }
 
-  const display = getDisplayedResponse();
+  const responseDisplay = getDisplayedResponse();
+  const display = state.rightView === "thinking" ? getDisplayedThinking() : responseDisplay;
   const responseId = display.kind === "history"
     ? display.item?.localPromptId || "none"
     : (display.kind === "active" ? display.turn?.localPromptId || "active" : "none");
@@ -1767,6 +1772,12 @@ function buildResponseDisplayText(item) {
   return responseText.trim() ? responseText : "(empty response)";
 }
 
+function buildThinkingDisplayText(item) {
+  if (!item) return "No thinking available for this response.";
+  const thinkingText = String(item.responseThinking || "");
+  return thinkingText.trim() ? thinkingText : "No thinking available for this response.";
+}
+
 function getActiveTurnMarkdown(turn) {
   if (!turn) return "";
   return String(turn.outputPreview || turn.responseText || "");
@@ -1791,6 +1802,29 @@ function getResponseReferenceLabel(display) {
       : "Assistant response in progress";
   }
   return "Latest response: none";
+}
+
+function getThinkingReferenceLabel(display) {
+  if (!display) return "Thinking: none";
+  if (display.kind === "history" && display.item) {
+    const selectedIndex = getSelectedHistoryIndex();
+    const total = getHistory().length;
+    const selectedLabel = total > 0 && selectedIndex >= 0 ? `${selectedIndex + 1}/${total}` : `0/${total}`;
+    const item = display.item;
+    const hasThinking = Boolean(normalizedText(item.responseThinking || ""));
+    const time = formatReferenceTime(item.completedAt ?? item.submittedAt ?? 0);
+    const label = hasThinking ? "assistant thinking" : "assistant thinking unavailable";
+    return time
+      ? `Response history ${selectedLabel} · ${label} · ${time}`
+      : `Response history ${selectedLabel} · ${label}`;
+  }
+  if (display.kind === "active" && display.turn) {
+    const time = formatReferenceTime(display.turn.firstAssistantMessageAt ?? display.turn.submittedAt ?? 0);
+    return time
+      ? `Assistant thinking in progress · ${time}`
+      : "Assistant thinking in progress";
+  }
+  return "Thinking: none";
 }
 
 function getDisplayedResponse() {
@@ -1836,6 +1870,40 @@ function getDisplayedResponse() {
   return {
     kind: "empty",
     text: "No response yet. Run editor text to generate a response.",
+    markdown: "",
+    hasContent: false,
+    previewWarning: "",
+  };
+}
+
+function getDisplayedThinking() {
+  const responseDisplay = getDisplayedResponse();
+  if (responseDisplay.kind === "history" && responseDisplay.item) {
+    const thinking = String(responseDisplay.item.responseThinking || "");
+    return {
+      kind: "history",
+      text: buildThinkingDisplayText(responseDisplay.item),
+      markdown: thinking,
+      hasContent: Boolean(normalizedText(thinking)),
+      item: responseDisplay.item,
+      previewWarning: "",
+    };
+  }
+
+  if (responseDisplay.kind === "active" && responseDisplay.turn) {
+    return {
+      kind: "active",
+      text: "Waiting for the active turn to finish before thinking becomes available.",
+      markdown: "",
+      hasContent: false,
+      turn: responseDisplay.turn,
+      previewWarning: "",
+    };
+  }
+
+  return {
+    kind: "empty",
+    text: "No thinking available for this response.",
     markdown: "",
     hasContent: false,
     previewWarning: "",
@@ -1954,6 +2022,7 @@ function renderSelectionPanel() {
     buildDetailBlock("Prompt text", item.promptText),
     buildDetailBlock("Effective prompt", item.effectivePrompt),
     buildDetailBlock("Response text", buildResponseDisplayText(item)),
+    buildDetailBlock("Thinking text", buildThinkingDisplayText(item)),
   );
 
   elements.selectionPanel.innerHTML = "";
@@ -2078,6 +2147,19 @@ function renderResponsePane() {
   const selected = history.length && selectedIndex >= 0 ? selectedIndex + 1 : 0;
   elements.historyIndexBadge.textContent = `History: ${selected}/${history.length}`;
 
+  if (state.rightView === "thinking") {
+    cancelScheduledResponsePreviewRender();
+    finishPreviewRender(elements.responseView);
+    state.responsePreviewRenderNonce += 1;
+    const thinkingText = String(display.text || "");
+    state.currentRenderedPreviewKey = `thinking\u0000${display.kind}\u0000${thinkingText}`;
+    setResponseViewHtml(buildPlainMarkdownHtml(thinkingText));
+    applyPendingResponseScrollReset();
+    scheduleResponsePaneRepaintNudge();
+    elements.referenceBadge.textContent = getThinkingReferenceLabel(display);
+    return;
+  }
+
   if (state.rightView === "markdown") {
     cancelScheduledResponsePreviewRender();
     finishPreviewRender(elements.responseView);
@@ -2113,7 +2195,7 @@ function renderEditorMeta() {
   const snapshot = state.snapshot;
   const history = getHistory();
   const selectedIndex = getSelectedHistoryIndex();
-  const display = getDisplayedResponse();
+  const display = state.rightView === "thinking" ? getDisplayedThinking() : getDisplayedResponse();
   const editorTextNormalized = normalizedText(elements.promptInput.value);
   const displayedResponseNormalized = display?.hasContent ? normalizedText(display.markdown) : "";
   const inSync = Boolean(displayedResponseNormalized) && editorTextNormalized === displayedResponseNormalized;
@@ -2132,6 +2214,7 @@ function renderEditorMeta() {
   elements.historyCountBadge.textContent = `History: ${history.length && selectedIndex >= 0 ? selectedIndex + 1 : 0}/${history.length}`;
   elements.syncBadge.hidden = !inSync;
   elements.syncBadge.classList.toggle("sync", inSync);
+  elements.syncBadge.textContent = state.rightView === "thinking" ? "In sync with thinking" : "In sync with response";
   if (elements.annotationModeSelect) {
     elements.annotationModeSelect.value = state.annotationsEnabled ? "on" : "off";
     elements.annotationModeSelect.title = state.annotationsEnabled
@@ -2345,7 +2428,7 @@ function updateActionState() {
   const runState = snapshot?.state?.runState ?? "idle";
   const running = runState === "running" || runState === "stopping";
   const selectedItem = getSelectedHistoryItem();
-  const displayed = getDisplayedResponse();
+  const displayed = state.rightView === "thinking" ? getDisplayedThinking() : getDisplayedResponse();
   const history = getHistory();
   const selectedIndex = getSelectedHistoryIndex();
   const displayedResponseText = displayed?.hasContent ? normalizedText(displayed.markdown) : "";
@@ -2377,7 +2460,9 @@ function updateActionState() {
   elements.historyLastBtn.disabled = history.length === 0 || (state.followLatest && selectedIndex === history.length - 1);
 
   elements.loadResponseBtn.disabled = state.busy || !displayedResponseText;
-  elements.loadResponseBtn.textContent = "Load response into editor";
+  elements.loadResponseBtn.textContent = state.rightView === "thinking"
+    ? "Load thinking into editor"
+    : "Load response into editor";
   if (!selectedItem) {
     elements.loadHistoryPromptBtn.disabled = true;
     elements.loadHistoryPromptBtn.textContent = getHistoryPromptButtonLabel(null);
@@ -2388,12 +2473,17 @@ function updateActionState() {
   }
 
   elements.copyResponseBtn.disabled = !displayedResponseText;
+  elements.copyResponseBtn.textContent = state.rightView === "thinking"
+    ? "Copy thinking text"
+    : "Copy response text";
 
   if (elements.exportPdfBtn) {
     const exportSource = getPdfExportSource();
     const canExportPdf = Boolean(exportSource && normalizedText(exportSource.markdown));
     elements.exportPdfBtn.disabled = state.pdfExportInProgress || !canExportPdf;
-    if (state.rightView === "markdown") {
+    if (state.rightView === "thinking") {
+      elements.exportPdfBtn.title = "Thinking view does not support PDF export yet.";
+    } else if (state.rightView === "markdown") {
       elements.exportPdfBtn.title = "Switch right pane to Response (Preview) or Editor (Preview) to export PDF.";
     } else if (!canExportPdf) {
       elements.exportPdfBtn.title = "Nothing to export yet.";
@@ -2876,15 +2966,17 @@ function handleHistoryLast() {
 }
 
 function loadSelectedResponse() {
-  const display = getDisplayedResponse();
+  const display = state.rightView === "thinking" ? getDisplayedThinking() : getDisplayedResponse();
   const responseText = display?.hasContent ? String(display.markdown || "") : "";
   if (!normalizedText(responseText)) {
-    setTransientStatus("No response available yet.", "warning");
+    setTransientStatus(state.rightView === "thinking" ? "No thinking available for the selected response." : "No response available yet.", "warning");
     return;
   }
-  const originLabel = display.kind === "active" ? "live response" : "selected response";
+  const originLabel = state.rightView === "thinking"
+    ? "assistant thinking"
+    : (display.kind === "active" ? "live response" : "selected response");
   setEditorText(responseText, originLabel, { sourcePath: null });
-  setTransientStatus("Loaded response into editor.", "success");
+  setTransientStatus(state.rightView === "thinking" ? "Loaded thinking into editor." : "Loaded response into editor.", "success");
 }
 
 function loadSelectedPrompt() {
@@ -2903,14 +2995,19 @@ function loadSelectedPrompt() {
 }
 
 async function copySelectedResponse() {
-  const display = getDisplayedResponse();
+  const display = state.rightView === "thinking" ? getDisplayedThinking() : getDisplayedResponse();
   const responseText = display?.hasContent ? String(display.markdown || "") : "";
   if (!normalizedText(responseText)) {
-    setTransientStatus("No response available yet.", "warning");
+    setTransientStatus(state.rightView === "thinking" ? "No thinking available yet." : "No response available yet.", "warning");
     return;
   }
   try {
-    await copyText(responseText, display.kind === "active" ? "Copied live response preview." : "Copied response text.");
+    await copyText(
+      responseText,
+      state.rightView === "thinking"
+        ? "Copied thinking text."
+        : (display.kind === "active" ? "Copied live response preview." : "Copied response text."),
+    );
   } catch (error) {
     setTransientStatus(error instanceof Error ? error.message : String(error), "error");
   }
@@ -3114,7 +3211,9 @@ function wireEvents() {
     elements.rightViewSelect.addEventListener("change", () => {
       state.rightView = elements.rightViewSelect.value === "editor-preview"
         ? "editor-preview"
-        : (elements.rightViewSelect.value === "markdown" ? "markdown" : "preview");
+        : (elements.rightViewSelect.value === "markdown"
+            ? "markdown"
+            : (elements.rightViewSelect.value === "thinking" ? "thinking" : "preview"));
       state.currentRenderedPreviewKey = "";
       render();
     });

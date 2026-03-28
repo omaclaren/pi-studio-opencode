@@ -75,3 +75,14 @@ test("collectObservedExternalResponses can still surface assistant errors when n
   assert.equal(observed[0]?.userMessageId, "u1");
   assert.deepEqual(observed[0]?.consumedAssistantMessageIds, ["a1"]);
 });
+
+test("collectObservedExternalResponses preserves assistant thinking text", () => {
+  const observed = collectObservedExternalResponses([
+    msg({ id: "u1", role: "user", created: 100, text: "typed in terminal" }),
+    msg({ id: "a1", role: "assistant", created: 140, completed: 150, text: "terminal reply", thinking: "reasoning trace" }),
+  ], new Set());
+
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0]?.response.text, "terminal reply");
+  assert.equal(observed[0]?.response.thinking, "reasoning trace");
+});
