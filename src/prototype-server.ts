@@ -9,6 +9,13 @@ import { fileURLToPath } from "node:url";
 import { createOpencodeStudioHost, type OpencodeMessageTokenUsage, type OpencodeStudioHostTelemetryEvent } from "./host-opencode.js";
 import { renderPrototypePdfWithPandoc, sanitizePrototypePdfFilename, PROTOTYPE_PDF_EXPORT_MAX_CHARS } from "./prototype-pdf.js";
 import { buildPrototypeThemeStylesheet, readPrototypeThemeDescriptor, type PrototypeThemeDescriptor } from "./prototype-theme.js";
+import {
+  buildPrototypeCritiquePrompt,
+  resolvePrototypeCritiqueLens,
+  PROTOTYPE_CRITIQUE_MAX_CHARS,
+  type PrototypeCritiqueLens,
+  type PrototypeRequestedCritiqueLens,
+} from "./prototype-critique.js";
 import type { StudioHost, StudioHostCapabilities, StudioHostHistoryItem, StudioHostState } from "./studio-host-types.js";
 
 export type PrototypeModelCatalogEntry = {
@@ -28,10 +35,24 @@ export type PrototypeServerOptions = {
   modelCatalog?: PrototypeModelCatalogEntry[];
 };
 
+type PrototypeRequestKind = "run" | "critique" | "response";
+
+type PrototypeRequestMetadata = {
+  requestKind: PrototypeRequestKind;
+  critiqueLens?: PrototypeCritiqueLens;
+};
+
+export type PrototypeHistoryItem = StudioHostHistoryItem & {
+  requestKind: PrototypeRequestKind;
+  critiqueLens?: PrototypeCritiqueLens;
+};
+
 type PrototypeTurnSnapshot = {
   localPromptId: string;
   chainIndex: number;
   promptMode: StudioHostHistoryItem["promptMode"];
+  requestKind: PrototypeRequestKind;
+  critiqueLens?: PrototypeCritiqueLens;
   promptSteeringCount: number;
   promptText: string;
   submittedAt: number;
@@ -72,7 +93,7 @@ type PrototypeThemeSnapshot = {
 export type PrototypeSnapshot = {
   state: StudioHostState;
   capabilities: StudioHostCapabilities;
-  history: StudioHostHistoryItem[];
+  history: PrototypeHistoryItem[];
   logs: Array<{ at: number; line: string }>;
   activeTurn: PrototypeTurnSnapshot | null;
   lastCompletedTurn: PrototypeTurnSnapshot | null;
@@ -364,11 +385,48 @@ function normalizePrompt(payload: { prompt?: unknown }): string {
   return prompt;
 }
 
-function createTurnRecord(item: StudioHostHistoryItem): PrototypeTurnRecord {
+function normalizeCritiqueRequest(payload: { document?: unknown; lens?: unknown }): {
+  document: string;
+  requestedLens: PrototypeRequestedCritiqueLens;
+} {
+  const document = typeof payload.document === "string" ? payload.document.trim() : "";
+  if (!document) {
+    throw new Error("Document text is required.");
+  }
+  if (document.length > PROTOTYPE_CRITIQUE_MAX_CHARS) {
+    throw new Error(`Document is too large for Studio critique (${PROTOTYPE_CRITIQUE_MAX_CHARS.toLocaleString()} characters max).`);
+  }
+
+  const lens = payload.lens === "writing" || payload.lens === "code" || payload.lens === "auto"
+    ? payload.lens
+    : "auto";
+
+  return { document, requestedLens: lens };
+}
+
+function defaultPrototypeRequestKind(item: StudioHostHistoryItem): PrototypeRequestKind {
+  return item.promptMode === "response" ? "response" : "run";
+}
+
+function augmentPrototypeHistoryItem(
+  item: StudioHostHistoryItem,
+  metadataByPromptId: ReadonlyMap<string, PrototypeRequestMetadata>,
+): PrototypeHistoryItem {
+  const metadata = metadataByPromptId.get(item.localPromptId);
+  return {
+    ...item,
+    requestKind: metadata?.requestKind ?? defaultPrototypeRequestKind(item),
+    critiqueLens: metadata?.critiqueLens,
+  };
+}
+
+function createTurnRecord(item: PrototypeHistoryItem): PrototypeTurnRecord {
   return {
     localPromptId: item.localPromptId,
     chainIndex: item.chainIndex,
     promptMode: item.promptMode,
+    requestKind: item.requestKind,
+    critiqueLens: item.critiqueLens,
     promptSteeringCount: item.promptSteeringCount,
     promptText: item.promptText,
     submittedAt: item.submittedAt,
@@ -383,6 +441,8 @@ function snapshotTurn(turn: PrototypeTurnRecord | null): PrototypeTurnSnapshot |
     localPromptId: turn.localPromptId,
     chainIndex: turn.chainIndex,
     promptMode: turn.promptMode,
+    requestKind: turn.requestKind,
+    critiqueLens: turn.critiqueLens,
     promptSteeringCount: turn.promptSteeringCount,
     promptText: turn.promptText,
     submittedAt: turn.submittedAt,
@@ -816,6 +876,7 @@ export async function startPrototypeServer(
   const modelCatalogByKey = new Map<string, PrototypeModelCatalogEntry>(
     (options.modelCatalog ?? []).map((entry) => [`${entry.providerID}/${entry.modelID}`, entry]),
   );
+  const requestMetadataByPromptId = new Map<string, PrototypeRequestMetadata>();
 
   const updateCurrentModel = (input: {
     providerID?: string;
@@ -844,9 +905,28 @@ export async function startPrototypeServer(
     };
   };
 
+  const augmentHistoryItem = (item: StudioHostHistoryItem): PrototypeHistoryItem => (
+    augmentPrototypeHistoryItem(item, requestMetadataByPromptId)
+  );
+
+  const applyRequestMetadataToTurn = (turn: PrototypeTurnRecord | null, metadata: PrototypeRequestMetadata): void => {
+    if (!turn) return;
+    turn.requestKind = metadata.requestKind;
+    turn.critiqueLens = metadata.critiqueLens;
+  };
+
+  const rememberActiveRequestMetadata = (metadata: PrototypeRequestMetadata): void => {
+    const activePromptId = currentState.activePromptId ?? host.getState().activePromptId;
+    if (!activePromptId) return;
+    requestMetadataByPromptId.set(activePromptId, metadata);
+    if (activeTurn?.localPromptId === activePromptId) {
+      applyRequestMetadataToTurn(activeTurn, metadata);
+    }
+  };
+
   const handleTelemetry = (event: OpencodeStudioHostTelemetryEvent): void => {
     if (event.type === "submission.dispatched") {
-      activeTurn = createTurnRecord(event.submission);
+      activeTurn = createTurnRecord(augmentHistoryItem(event.submission));
       return;
     }
 
@@ -919,14 +999,15 @@ export async function startPrototypeServer(
     }
 
     if (event.type === "submission.completed") {
-      const completed = activeTurn && activeTurn.localPromptId === event.historyItem.localPromptId
+      const historyItem = augmentHistoryItem(event.historyItem);
+      const completed = activeTurn && activeTurn.localPromptId === historyItem.localPromptId
         ? activeTurn
-        : createTurnRecord(event.historyItem);
-      completed.completedAt = event.historyItem.completedAt ?? event.at;
-      completed.responseText = event.historyItem.responseText;
-      completed.responseError = event.historyItem.responseError;
-      if (typeof event.historyItem.responseText === "string" && event.historyItem.responseText.trim()) {
-        completed.outputPreview = event.historyItem.responseText;
+        : createTurnRecord(historyItem);
+      completed.completedAt = historyItem.completedAt ?? event.at;
+      completed.responseText = historyItem.responseText;
+      completed.responseError = historyItem.responseError;
+      if (typeof historyItem.responseText === "string" && historyItem.responseText.trim()) {
+        completed.outputPreview = historyItem.responseText;
       }
       lastCompletedTurn = completed;
       activeTurn = null;
@@ -968,7 +1049,7 @@ export async function startPrototypeServer(
     return {
       state: currentState,
       capabilities,
-      history: host.getHistory(),
+      history: host.getHistory().map((item) => augmentHistoryItem(item)),
       logs: logLines.slice(-80),
       activeTurn: snapshotTurn(activeTurn),
       lastCompletedTurn: snapshotTurn(lastCompletedTurn),
@@ -1112,6 +1193,17 @@ export async function startPrototypeServer(
           headers["X-PI-STUDIO-EXPORT-WARNING"] = warning;
         }
         sendBinary(response, 200, pdf, "application/pdf", headers);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/critique") {
+        const payload = await readJsonBody<{ document?: string; lens?: PrototypeRequestedCritiqueLens }>(request);
+        const { document, requestedLens } = normalizeCritiqueRequest(payload);
+        const resolvedLens = resolvePrototypeCritiqueLens(requestedLens, document);
+        const prompt = buildPrototypeCritiquePrompt(document, resolvedLens);
+        await host.startRun(prompt);
+        rememberActiveRequestMetadata({ requestKind: "critique", critiqueLens: resolvedLens });
+        sendJson(response, 200, { ok: true, lens: resolvedLens, snapshot: buildSnapshot() });
         return;
       }
 

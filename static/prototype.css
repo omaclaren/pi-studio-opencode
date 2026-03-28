@@ -139,6 +139,7 @@ button:disabled {
 }
 
 #runBtn,
+#critiqueBtn,
 #queueBtn,
 #loadResponseBtn {
   min-width: 10rem;
@@ -148,6 +149,7 @@ button:disabled {
 }
 
 #runBtn:not(:disabled):not(.request-stop-active),
+#critiqueBtn:not(:disabled):not(.request-stop-active),
 #queueBtn:not(:disabled),
 #loadResponseBtn:not(:disabled) {
   background: var(--accent);
@@ -157,19 +159,22 @@ button:disabled {
 }
 
 #runBtn:not(:disabled):not(.request-stop-active):hover,
+#critiqueBtn:not(:disabled):not(.request-stop-active):hover,
 #queueBtn:not(:disabled):hover,
 #loadResponseBtn:not(:disabled):hover {
   filter: brightness(0.95);
 }
 
-#runBtn.request-stop-active {
+#runBtn.request-stop-active,
+#critiqueBtn.request-stop-active {
   background: var(--error);
   border-color: var(--error);
   color: var(--error-contrast);
   font-weight: 600;
 }
 
-#runBtn.request-stop-active:not(:disabled):hover {
+#runBtn.request-stop-active:not(:disabled):hover,
+#critiqueBtn.request-stop-active:not(:disabled):hover {
   filter: brightness(0.95);
 }
 
@@ -1107,6 +1112,10 @@ textarea {
 
 .badge.run {
   color: var(--text);
+}
+
+.badge.critique {
+  color: var(--accent);
 }
 
 .badge.steer {

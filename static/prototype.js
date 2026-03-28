@@ -120,6 +120,8 @@ const elements = {
   annotationModeSelect: document.getElementById("annotationModeSelect"),
   stripAnnotationsBtn: document.getElementById("stripAnnotationsBtn"),
   saveAnnotatedBtn: document.getElementById("saveAnnotatedBtn"),
+  lensSelect: document.getElementById("lensSelect"),
+  critiqueBtn: document.getElementById("critiqueBtn"),
   highlightSelect: document.getElementById("highlightSelect"),
   langSelect: document.getElementById("langSelect"),
   sourceHighlight: document.getElementById("sourceHighlight"),
@@ -138,6 +140,8 @@ const elements = {
   historyLastBtn: document.getElementById("historyLastBtn"),
   historyIndexBadge: document.getElementById("historyIndexBadge"),
   loadResponseBtn: document.getElementById("loadResponseBtn"),
+  loadCritiqueNotesBtn: document.getElementById("loadCritiqueNotesBtn"),
+  loadCritiqueFullBtn: document.getElementById("loadCritiqueFullBtn"),
   loadHistoryPromptBtn: document.getElementById("loadHistoryPromptBtn"),
   copyResponseBtn: document.getElementById("copyResponseBtn"),
   exportPdfBtn: document.getElementById("exportPdfBtn"),
@@ -509,7 +513,7 @@ function maybeArmCompletionTitleAttention(snapshot, { initial = false } = {}) {
 
   state.lastCompletedTurnKey = nextKey;
   if (!shouldShowTitleAttention()) return;
-  armTitleAttention("● Response ready");
+  armTitleAttention(getRequestKind(snapshot?.lastCompletedTurn) === "critique" ? "● Critique ready" : "● Response ready");
 }
 
 function applySnapshot(snapshot, options = {}) {
@@ -517,9 +521,75 @@ function applySnapshot(snapshot, options = {}) {
   maybeArmCompletionTitleAttention(state.snapshot, options);
 }
 
+function getRequestKind(value) {
+  if (value && value.requestKind === "critique") return "critique";
+  if (value && value.promptMode === "response") return "response";
+  return "run";
+}
+
+function isCritiqueResponseMarkdown(markdown) {
+  const lower = String(markdown || "").toLowerCase();
+  return lower.includes("## critiques") && lower.includes("## document");
+}
+
+function isCritiqueHistoryItem(item) {
+  return Boolean(item) && (getRequestKind(item) === "critique" || isCritiqueResponseMarkdown(item.responseText || ""));
+}
+
+function isCritiqueDisplay(display) {
+  if (!display) return false;
+  if (display.kind === "history") {
+    return isCritiqueHistoryItem(display.item);
+  }
+  if (display.kind === "active") {
+    return getRequestKind(display.turn) === "critique";
+  }
+  return false;
+}
+
+function extractMarkdownSection(markdown, title) {
+  const heading = `## ${String(title || "").trim().toLowerCase()}`;
+  const lines = String(markdown || "").split("\n");
+  let start = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (String(lines[i] || "").trim().toLowerCase() === heading) {
+      start = i + 1;
+      break;
+    }
+  }
+
+  if (start < 0) return "";
+
+  const collected = [];
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (String(line || "").trim().startsWith("## ")) break;
+    collected.push(line);
+  }
+
+  return collected.join("\n").trim();
+}
+
+function buildCritiqueNotesMarkdown(markdown) {
+  const assessment = extractMarkdownSection(markdown, "Assessment");
+  const critiques = extractMarkdownSection(markdown, "Critiques");
+  const parts = [];
+
+  if (assessment) {
+    parts.push(`## Assessment\n\n${assessment}`);
+  }
+  if (critiques) {
+    parts.push(`## Critiques\n\n${critiques}`);
+  }
+
+  return parts.join("\n\n").trim();
+}
+
 function getHistoryPromptButtonLabel(item) {
   if (!item) return "Load response prompt into editor";
   if (item.promptMode === "steer") return "Load effective prompt into editor";
+  if (item.promptMode === "run" && getRequestKind(item) === "critique") return "Load critique prompt into editor";
   if (item.promptMode === "run") return "Load run prompt into editor";
   return "Load response prompt into editor";
 }
@@ -527,6 +597,7 @@ function getHistoryPromptButtonLabel(item) {
 function getHistoryPromptLoadedStatus(item) {
   if (!item) return "Prompt unavailable for the selected response.";
   if (item.promptMode === "steer") return "Loaded effective prompt into editor.";
+  if (item.promptMode === "run" && getRequestKind(item) === "critique") return "Loaded critique prompt into editor.";
   if (item.promptMode === "run") return "Loaded run prompt into editor.";
   return "Loaded response prompt into editor.";
 }
@@ -534,12 +605,14 @@ function getHistoryPromptLoadedStatus(item) {
 function getHistoryPromptSourceStateLabel(item) {
   if (!item) return "response prompt";
   if (item.promptMode === "steer") return "effective prompt";
+  if (item.promptMode === "run" && getRequestKind(item) === "critique") return "critique prompt";
   if (item.promptMode === "run") return "run prompt";
   return "response prompt";
 }
 
 function getHistoryItemTitle(item) {
   if (!item) return "Response";
+  if (item.promptMode === "run" && getRequestKind(item) === "critique") return "Critique";
   if (item.promptMode === "run") return "Run";
   if (item.promptMode === "steer") return `Steer ${item.promptSteeringCount}`;
   return "Response";
@@ -1615,8 +1688,7 @@ function getPreviewSource() {
     };
   }
 
-  const responseDisplay = getDisplayedResponse();
-  const display = state.rightView === "thinking" ? getDisplayedThinking() : responseDisplay;
+  const display = getDisplayedResponse();
   const responseId = display.kind === "history"
     ? display.item?.localPromptId || "none"
     : (display.kind === "active" ? display.turn?.localPromptId || "active" : "none");
@@ -1756,13 +1828,16 @@ async function renderResponsePreviewNow() {
 
 function formatPromptDescriptor(turn) {
   if (!turn) return "-";
-  return turn.promptMode === "run"
-    ? `chain ${turn.chainIndex} · run`
-    : `chain ${turn.chainIndex} · steer ${turn.promptSteeringCount}`;
+  if (turn.promptMode === "run") {
+    return getRequestKind(turn) === "critique"
+      ? `chain ${turn.chainIndex} · critique`
+      : `chain ${turn.chainIndex} · run`;
+  }
+  return `chain ${turn.chainIndex} · steer ${turn.promptSteeringCount}`;
 }
 
 function buildResponseDisplayText(item) {
-  if (!item) return "No response yet. Run editor text to generate a response.";
+  if (!item) return "No response yet. Run editor text or critique editor text.";
   const responseText = String(item.responseText || "");
   if (item.responseError) {
     return responseText.trim()
@@ -1791,15 +1866,17 @@ function getResponseReferenceLabel(display) {
     const selectedLabel = total > 0 && selectedIndex >= 0 ? `${selectedIndex + 1}/${total}` : `0/${total}`;
     const item = display.item;
     const time = formatReferenceTime(item.completedAt ?? item.submittedAt ?? 0);
+    const responseLabel = isCritiqueHistoryItem(item) ? "assistant critique" : "assistant response";
     return time
-      ? `Response history ${selectedLabel} · assistant response · ${time}`
-      : `Response history ${selectedLabel} · assistant response`;
+      ? `Response history ${selectedLabel} · ${responseLabel} · ${time}`
+      : `Response history ${selectedLabel} · ${responseLabel}`;
   }
   if (display.kind === "active" && display.turn) {
     const time = formatReferenceTime(display.turn.firstOutputTextAt ?? display.turn.firstAssistantMessageAt ?? display.turn.submittedAt ?? 0);
+    const responseLabel = getRequestKind(display.turn) === "critique" ? "Assistant critique in progress" : "Assistant response in progress";
     return time
-      ? `Assistant response in progress · ${time}`
-      : "Assistant response in progress";
+      ? `${responseLabel} · ${time}`
+      : responseLabel;
   }
   return "Latest response: none";
 }
@@ -1859,7 +1936,9 @@ function getDisplayedResponse() {
   if (activeTurn) {
     return {
       kind: "active",
-      text: "Waiting for the active turn to produce a response.",
+      text: getRequestKind(activeTurn) === "critique"
+        ? "Waiting for the active critique to produce a response."
+        : "Waiting for the active turn to produce a response.",
       markdown: "",
       hasContent: false,
       turn: activeTurn,
@@ -1869,7 +1948,7 @@ function getDisplayedResponse() {
 
   return {
     kind: "empty",
-    text: "No response yet. Run editor text to generate a response.",
+    text: "No response yet. Run editor text or critique editor text.",
     markdown: "",
     hasContent: false,
     previewWarning: "",
@@ -1944,6 +2023,8 @@ function formatTurnSummary(turn) {
   const effectiveEnd = turn.completedAt || now;
   return [
     ["Prompt", formatPromptDescriptor(turn)],
+    ["Request", getRequestKind(turn)],
+    ["Critique focus", turn.critiqueLens || "-"],
     ["Submitted", formatAbsoluteTime(turn.submittedAt)],
     ["To busy", formatRelativeDuration(turn.submittedAt, turn.backendBusyAt)],
     ["To first assistant", formatRelativeDuration(turn.submittedAt, turn.firstAssistantMessageAt)],
@@ -2008,6 +2089,8 @@ function renderSelectionPanel() {
   metaBlock.append(metaHeading);
   appendMetaRow(metaBlock, "chain", String(item.chainIndex));
   appendMetaRow(metaBlock, "mode", item.promptMode);
+  appendMetaRow(metaBlock, "request", getRequestKind(item));
+  appendMetaRow(metaBlock, "critique focus", item.critiqueLens || "-");
   appendMetaRow(metaBlock, "steering count", String(item.promptSteeringCount));
   appendMetaRow(metaBlock, "queued while busy", item.queuedWhileBusy ? "yes" : "no");
   appendMetaRow(metaBlock, "submitted", formatAbsoluteTime(item.submittedAt));
@@ -2085,6 +2168,7 @@ function renderHistoryDiagnostics() {
       badges.className = "badges";
       for (const [text, className] of [
         [item.promptMode, item.promptMode],
+        [getRequestKind(item), getRequestKind(item) === "critique" ? "critique" : ""],
         [`steers:${item.promptSteeringCount}`, ""],
         [item.queuedWhileBusy ? "queued-busy" : "direct", ""],
         [item.responseError ? "error" : "ok", item.responseError ? "error" : ""],
@@ -2137,7 +2221,8 @@ function renderDiagnostics() {
 function renderResponsePane() {
   const history = getHistory();
   const selectedIndex = getSelectedHistoryIndex();
-  const display = getDisplayedResponse();
+  const responseDisplay = getDisplayedResponse();
+  const display = state.rightView === "thinking" ? getDisplayedThinking() : responseDisplay;
   updatePendingResponseScrollReset(display);
 
   if (elements.rightViewSelect) {
@@ -2282,7 +2367,13 @@ function deriveStatus() {
     return { message: "Studio: sending request to the attached session…", level: "", spinning: true };
   }
   if (snapshot.state.runState === "stopping") {
-    return { message: "Studio: stopping current run…", level: "warning", spinning: true };
+    return {
+      message: getRequestKind(snapshot.activeTurn) === "critique"
+        ? "Studio: stopping current critique…"
+        : "Studio: stopping current run…",
+      level: "warning",
+      spinning: true,
+    };
   }
   if (snapshot.state.runState === "running") {
     const activeTurn = snapshot.activeTurn;
@@ -2294,9 +2385,15 @@ function deriveStatus() {
     let action = "Studio: waiting for queued steering";
     if (activeTurn) {
       if (activeTurn.promptMode === "run") {
-        action = activeTurn.firstOutputTextAt
-          ? "Studio: generating response"
-          : "Studio: running editor text";
+        if (getRequestKind(activeTurn) === "critique") {
+          action = activeTurn.firstOutputTextAt
+            ? "Studio: generating critique"
+            : "Studio: running critique";
+        } else {
+          action = activeTurn.firstOutputTextAt
+            ? "Studio: generating response"
+            : "Studio: running editor text";
+        }
       } else {
         action = activeTurn.firstOutputTextAt
           ? `Studio: generating steering ${activeTurn.promptSteeringCount}`
@@ -2324,8 +2421,9 @@ function deriveStatus() {
     const selected = history.length && selectedIndex >= 0 ? selectedIndex + 1 : history.length;
     const time = formatReferenceTime(latest.completedAt ?? latest.submittedAt ?? 0);
     const suffix = time ? ` · ${time}` : "";
+    const readyLabel = isCritiqueHistoryItem(latest) ? "critique" : "response";
     return {
-      message: `Ready · response ${selected}/${history.length}${suffix}`,
+      message: `Ready · ${readyLabel} ${selected}/${history.length}${suffix}`,
       level: "",
       spinning: false,
     };
@@ -2426,18 +2524,42 @@ function updateActionState() {
   const snapshot = state.snapshot;
   const hasPrompt = Boolean(normalizedText(elements.promptInput.value));
   const runState = snapshot?.state?.runState ?? "idle";
-  const running = runState === "running" || runState === "stopping";
+  const activeRequestKind = getRequestKind(snapshot?.activeTurn);
+  const runIsStop = runState === "running" && activeRequestKind !== "critique";
+  const critiqueIsStop = runState === "running" && activeRequestKind === "critique";
+  const stoppingRun = runState === "stopping" && activeRequestKind !== "critique";
+  const stoppingCritique = runState === "stopping" && activeRequestKind === "critique";
   const selectedItem = getSelectedHistoryItem();
-  const displayed = state.rightView === "thinking" ? getDisplayedThinking() : getDisplayedResponse();
+  const responseDisplay = getDisplayedResponse();
+  const displayed = state.rightView === "thinking" ? getDisplayedThinking() : responseDisplay;
+  const displayedResponseText = displayed?.hasContent ? normalizedText(displayed.markdown) : "";
   const history = getHistory();
   const selectedIndex = getSelectedHistoryIndex();
-  const displayedResponseText = displayed?.hasContent ? normalizedText(displayed.markdown) : "";
+  const normalizedEditor = normalizedText(elements.promptInput.value);
+  const selectedResponseItem = responseDisplay.kind === "history" ? responseDisplay.item : null;
+  const critiqueHistoryItem = selectedResponseItem && isCritiqueHistoryItem(selectedResponseItem)
+    ? selectedResponseItem
+    : null;
+  const structuredCritiqueItem = critiqueHistoryItem && isCritiqueResponseMarkdown(critiqueHistoryItem.responseText || "")
+    ? critiqueHistoryItem
+    : null;
+  const critiqueNotes = structuredCritiqueItem ? buildCritiqueNotesMarkdown(structuredCritiqueItem.responseText || "") : "";
+  const fullCritiqueText = structuredCritiqueItem ? String(structuredCritiqueItem.responseText || "") : "";
+  const responseLoaded = Boolean(displayedResponseText) && normalizedEditor === displayedResponseText;
+  const critiqueNotesLoaded = Boolean(critiqueNotes) && normalizedEditor === normalizedText(critiqueNotes);
+  const fullCritiqueLoaded = Boolean(fullCritiqueText) && normalizedEditor === normalizedText(fullCritiqueText);
 
-  elements.runBtn.textContent = runState === "stopping" ? "Stopping…" : (running ? "Stop" : "Run editor text");
-  elements.runBtn.classList.toggle("request-stop-active", running);
-  elements.runBtn.disabled = !snapshot || state.busy || (!running && !hasPrompt) || runState === "stopping";
+  elements.runBtn.textContent = stoppingRun ? "Stopping…" : (runIsStop ? "Stop" : "Run editor text");
+  elements.runBtn.classList.toggle("request-stop-active", runIsStop || stoppingRun);
+  elements.runBtn.disabled = !snapshot || state.busy || runState === "stopping" || (runState === "running" ? !runIsStop : !hasPrompt);
 
-  elements.queueBtn.disabled = !snapshot || state.busy || runState !== "running" || !hasPrompt;
+  if (elements.critiqueBtn) {
+    elements.critiqueBtn.textContent = stoppingCritique ? "Stopping…" : (critiqueIsStop ? "Stop" : "Critique editor text");
+    elements.critiqueBtn.classList.toggle("request-stop-active", critiqueIsStop || stoppingCritique);
+    elements.critiqueBtn.disabled = !snapshot || state.busy || runState === "stopping" || (runState === "running" ? !critiqueIsStop : !hasPrompt);
+  }
+
+  elements.queueBtn.disabled = !snapshot || state.busy || runState !== "running" || activeRequestKind === "critique" || !hasPrompt;
   elements.copyDraftBtn.disabled = !hasPrompt;
   if (elements.saveAsBtn) elements.saveAsBtn.disabled = state.busy || !hasPrompt;
   if (elements.saveBtn) elements.saveBtn.disabled = state.busy || !hasPrompt || !state.sourcePath;
@@ -2447,6 +2569,7 @@ function updateActionState() {
   if (elements.annotationModeSelect) elements.annotationModeSelect.disabled = state.busy;
   if (elements.stripAnnotationsBtn) elements.stripAnnotationsBtn.disabled = state.busy || !hasAnnotationMarkers(elements.promptInput.value);
   if (elements.saveAnnotatedBtn) elements.saveAnnotatedBtn.disabled = state.busy || !hasPrompt;
+  if (elements.lensSelect) elements.lensSelect.disabled = state.busy || runState !== "idle";
   if (elements.highlightSelect) elements.highlightSelect.disabled = state.busy;
   if (elements.langSelect) elements.langSelect.disabled = state.busy;
   if (elements.responseHighlightSelect) {
@@ -2459,10 +2582,44 @@ function updateActionState() {
   elements.historyNextBtn.disabled = history.length === 0 || state.followLatest || selectedIndex < 0 || selectedIndex >= history.length - 1;
   elements.historyLastBtn.disabled = history.length === 0 || (state.followLatest && selectedIndex === history.length - 1);
 
-  elements.loadResponseBtn.disabled = state.busy || !displayedResponseText;
-  elements.loadResponseBtn.textContent = state.rightView === "thinking"
-    ? "Load thinking into editor"
-    : "Load response into editor";
+  if (state.rightView === "thinking") {
+    elements.loadResponseBtn.hidden = false;
+    if (elements.loadCritiqueNotesBtn) elements.loadCritiqueNotesBtn.hidden = true;
+    if (elements.loadCritiqueFullBtn) elements.loadCritiqueFullBtn.hidden = true;
+
+    elements.loadResponseBtn.disabled = state.busy || !displayedResponseText || responseLoaded;
+    elements.loadResponseBtn.textContent = !displayedResponseText
+      ? "Thinking unavailable"
+      : (responseLoaded ? "Thinking already in editor" : "Load thinking into editor");
+
+    elements.copyResponseBtn.disabled = !displayedResponseText;
+    elements.copyResponseBtn.textContent = "Copy thinking text";
+  } else {
+    const isStructuredCritique = Boolean(structuredCritiqueItem);
+    elements.loadResponseBtn.hidden = isStructuredCritique;
+    if (elements.loadCritiqueNotesBtn) elements.loadCritiqueNotesBtn.hidden = !isStructuredCritique;
+    if (elements.loadCritiqueFullBtn) elements.loadCritiqueFullBtn.hidden = !isStructuredCritique;
+
+    elements.loadResponseBtn.disabled = state.busy || !displayedResponseText || responseLoaded || isStructuredCritique;
+    elements.loadResponseBtn.textContent = responseLoaded ? "Response already in editor" : "Load response into editor";
+
+    if (elements.loadCritiqueNotesBtn) {
+      elements.loadCritiqueNotesBtn.disabled = state.busy || !isStructuredCritique || !critiqueNotes || critiqueNotesLoaded;
+      elements.loadCritiqueNotesBtn.textContent = critiqueNotesLoaded
+        ? "Critique notes already in editor"
+        : "Load critique notes into editor";
+    }
+    if (elements.loadCritiqueFullBtn) {
+      elements.loadCritiqueFullBtn.disabled = state.busy || !isStructuredCritique || fullCritiqueLoaded;
+      elements.loadCritiqueFullBtn.textContent = fullCritiqueLoaded
+        ? "Full critique already in editor"
+        : "Load full critique into editor";
+    }
+
+    elements.copyResponseBtn.disabled = !displayedResponseText;
+    elements.copyResponseBtn.textContent = critiqueHistoryItem ? "Copy critique text" : "Copy response text";
+  }
+
   if (!selectedItem) {
     elements.loadHistoryPromptBtn.disabled = true;
     elements.loadHistoryPromptBtn.textContent = getHistoryPromptButtonLabel(null);
@@ -2471,11 +2628,6 @@ function updateActionState() {
     elements.loadHistoryPromptBtn.disabled = state.busy || !normalizedText(promptSource);
     elements.loadHistoryPromptBtn.textContent = getHistoryPromptButtonLabel(selectedItem);
   }
-
-  elements.copyResponseBtn.disabled = !displayedResponseText;
-  elements.copyResponseBtn.textContent = state.rightView === "thinking"
-    ? "Copy thinking text"
-    : "Copy response text";
 
   if (elements.exportPdfBtn) {
     const exportSource = getPdfExportSource();
@@ -2871,16 +3023,23 @@ async function copyText(text, successMessage) {
   setTransientStatus(successMessage, "success");
 }
 
+async function requestStopActiveRun(requestKind = getRequestKind(state.snapshot?.activeTurn)) {
+  try {
+    await postJson("/api/stop");
+    setTransientStatus(requestKind === "critique" ? "Stop requested for critique." : "Stop requested.", "success");
+  } catch (error) {
+    setTransientStatus(error instanceof Error ? error.message : String(error), "error");
+  }
+}
+
 async function runOrStop() {
   const snapshot = state.snapshot;
   if (!snapshot) return;
   if (snapshot.state.runState === "running") {
-    try {
-      await postJson("/api/stop");
-      setTransientStatus("Stop requested.", "success");
-    } catch (error) {
-      setTransientStatus(error instanceof Error ? error.message : String(error), "error");
+    if (getRequestKind(snapshot.activeTurn) === "critique") {
+      return;
     }
+    await requestStopActiveRun("run");
     return;
   }
 
@@ -2894,6 +3053,37 @@ async function runOrStop() {
   try {
     await postJson("/api/run", { prompt });
     setTransientStatus("Running editor text.", "success");
+  } catch (error) {
+    setTransientStatus(error instanceof Error ? error.message : String(error), "error");
+  }
+}
+
+async function critiqueOrStop() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  if (snapshot.state.runState === "running") {
+    if (getRequestKind(snapshot.activeTurn) !== "critique") {
+      return;
+    }
+    await requestStopActiveRun("critique");
+    return;
+  }
+
+  const document = normalizedText(prepareEditorTextForSend(elements.promptInput.value));
+  if (!document) {
+    setTransientStatus("Add editor text before critique.", "warning");
+    return;
+  }
+
+  const lens = elements.lensSelect && ["auto", "writing", "code"].includes(elements.lensSelect.value)
+    ? elements.lensSelect.value
+    : "auto";
+
+  clearTitleAttention();
+  try {
+    const result = await postJson("/api/critique", { document, lens });
+    const resolvedLens = ["writing", "code"].includes(result?.lens) ? result.lens : lens;
+    setTransientStatus(`Running critique${resolvedLens === "auto" ? "" : ` (${resolvedLens})`}.`, "success");
   } catch (error) {
     setTransientStatus(error instanceof Error ? error.message : String(error), "error");
   }
@@ -2979,6 +3169,34 @@ function loadSelectedResponse() {
   setTransientStatus(state.rightView === "thinking" ? "Loaded thinking into editor." : "Loaded response into editor.", "success");
 }
 
+function loadSelectedCritiqueNotes() {
+  const display = getDisplayedResponse();
+  const item = display.kind === "history" ? display.item : null;
+  if (!item || !isCritiqueHistoryItem(item) || !isCritiqueResponseMarkdown(item.responseText || "")) {
+    setTransientStatus("The selected response is not a structured critique.", "warning");
+    return;
+  }
+  const notes = buildCritiqueNotesMarkdown(item.responseText || "");
+  if (!notes) {
+    setTransientStatus("No critique notes (Assessment/Critiques) found in the selected response.", "warning");
+    return;
+  }
+  setEditorText(notes, "critique notes", { sourcePath: null });
+  setTransientStatus("Loaded critique notes into editor.", "success");
+}
+
+function loadSelectedCritiqueFull() {
+  const display = getDisplayedResponse();
+  const item = display.kind === "history" ? display.item : null;
+  const fullCritique = String(item?.responseText || "");
+  if (!item || !isCritiqueHistoryItem(item) || !isCritiqueResponseMarkdown(fullCritique)) {
+    setTransientStatus("The selected response is not a structured critique.", "warning");
+    return;
+  }
+  setEditorText(fullCritique, "full critique", { sourcePath: null });
+  setTransientStatus("Loaded full critique into editor.", "success");
+}
+
 function loadSelectedPrompt() {
   const item = getSelectedHistoryItem();
   if (!item) {
@@ -3006,7 +3224,9 @@ async function copySelectedResponse() {
       responseText,
       state.rightView === "thinking"
         ? "Copied thinking text."
-        : (display.kind === "active" ? "Copied live response preview." : "Copied response text."),
+        : (display.kind === "active"
+            ? (getRequestKind(display.turn) === "critique" ? "Copied live critique preview." : "Copied live response preview.")
+            : (isCritiqueDisplay(display) ? "Copied critique text." : "Copied response text.")),
     );
   } catch (error) {
     setTransientStatus(error instanceof Error ? error.message : String(error), "error");
@@ -3130,9 +3350,13 @@ function handleGlobalShortcuts(event) {
     return;
   }
 
-  if (plainEscape && state.snapshot?.state?.runState === "running" && !elements.runBtn.disabled) {
+  if (plainEscape && state.snapshot?.state?.runState === "running") {
     event.preventDefault();
-    void runOrStop();
+    if (getRequestKind(state.snapshot?.activeTurn) === "critique") {
+      void requestStopActiveRun("critique");
+    } else {
+      void requestStopActiveRun("run");
+    }
     return;
   }
 
@@ -3182,6 +3406,9 @@ function wireEvents() {
 
   elements.diagnosticsBtn.addEventListener("click", () => toggleDiagnostics());
   elements.runBtn.addEventListener("click", () => void runOrStop());
+  if (elements.critiqueBtn) {
+    elements.critiqueBtn.addEventListener("click", () => void critiqueOrStop());
+  }
   elements.queueBtn.addEventListener("click", () => void queueSteering());
   elements.copyDraftBtn.addEventListener("click", () => {
     void copyText(elements.promptInput.value, "Copied editor text.").catch((error) => {
@@ -3248,6 +3475,12 @@ function wireEvents() {
   elements.historyNextBtn.addEventListener("click", () => handleHistoryNext());
   elements.historyLastBtn.addEventListener("click", () => handleHistoryLast());
   elements.loadResponseBtn.addEventListener("click", () => loadSelectedResponse());
+  if (elements.loadCritiqueNotesBtn) {
+    elements.loadCritiqueNotesBtn.addEventListener("click", () => loadSelectedCritiqueNotes());
+  }
+  if (elements.loadCritiqueFullBtn) {
+    elements.loadCritiqueFullBtn.addEventListener("click", () => loadSelectedCritiqueFull());
+  }
   elements.loadHistoryPromptBtn.addEventListener("click", () => loadSelectedPrompt());
   elements.copyResponseBtn.addEventListener("click", () => void copySelectedResponse());
   if (elements.exportPdfBtn) {

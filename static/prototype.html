@@ -56,6 +56,12 @@
                 <button id="saveAnnotatedBtn" type="button">Save .annotated.md</button>
               </div>
               <div class="source-actions-row">
+                <select id="lensSelect" aria-label="Critique focus">
+                  <option value="auto" selected>Critique focus: Auto</option>
+                  <option value="writing">Critique focus: Writing</option>
+                  <option value="code">Critique focus: Code</option>
+                </select>
+                <button id="critiqueBtn" type="button">Critique editor text</button>
                 <select id="highlightSelect" aria-label="Editor syntax highlighting">
                   <option value="on" selected>Syntax highlight: On</option>
                   <option value="off">Syntax highlight: Off</option>
@@ -112,6 +118,8 @@
             </div>
             <div class="response-actions-row">
               <button id="loadResponseBtn" type="button">Load response into editor</button>
+              <button id="loadCritiqueNotesBtn" type="button" hidden>Load critique notes into editor</button>
+              <button id="loadCritiqueFullBtn" type="button" hidden>Load full critique into editor</button>
               <button id="loadHistoryPromptBtn" type="button">Load response prompt into editor</button>
               <button id="copyResponseBtn" type="button">Copy response text</button>
             </div>
