@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   buildPrototypePandocBibliographyArgs,
+  decoratePrototypeLatexRenderedHtml,
   injectPrototypeLatexEquationTags,
   preprocessPrototypeLatexReferences,
   readPrototypeLatexAuxLabels,
@@ -63,6 +64,15 @@ test("LaTeX aux helpers resolve ref, eqref, autoref, and equation tags", async (
 
     const tagged = injectPrototypeLatexEquationTags(source, texPath, dir);
     assert.match(tagged, /\\tag\{3\}\\label\{eq:test\}/);
+
+    const decorated = decoratePrototypeLatexRenderedHtml(
+      '<p>See <a href="#eq:test" data-reference-type="eqref" data-reference="eq:test">[eq:test]</a>.</p><math display="block">\\label{eq:test}</math>',
+      texPath,
+      dir,
+    );
+    assert.match(decorated, />\(3\)<\/a>/);
+    assert.match(decorated, /studio-display-equation/);
+    assert.match(decorated, /studio-display-equation-number">\(3\)</);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -12,7 +12,7 @@
       <div class="controls">
         <button id="saveAsBtn" type="button">Save editor as...</button>
         <button id="saveBtn" type="button">Save editor</button>
-        <button id="loadFileBtn" type="button">Load file content</button>
+        <label class="file-label">Load file content<input id="fileInput" type="file" accept=".md,.markdown,.mdx,.qmd,.js,.mjs,.cjs,.jsx,.ts,.mts,.cts,.tsx,.py,.pyw,.sh,.bash,.zsh,.json,.jsonc,.json5,.rs,.c,.h,.cpp,.cxx,.cc,.hpp,.hxx,.jl,.f90,.f95,.f03,.f,.for,.r,.R,.m,.tex,.latex,.diff,.patch,.java,.go,.rb,.swift,.html,.htm,.css,.xml,.yaml,.yml,.toml,.lua,.txt,.rst,.adoc" /></label>
         <button id="loadGitDiffBtn" type="button">Load git diff</button>
         <button id="refreshBtn" type="button">Refresh</button>
         <button id="diagnosticsBtn" type="button">Diagnostics</button>
@@ -33,6 +33,10 @@
               <span id="sourceBadge" class="source-badge">Editor origin: studio editor</span>
               <button id="resourceDirBtn" type="button" class="resource-dir-btn">Set working dir</button>
               <span id="resourceDirLabel" class="source-badge resource-dir-label" hidden></span>
+              <span id="resourceDirInputWrap" class="resource-dir-input-wrap">
+                <input id="resourceDirInput" type="text" placeholder="/path/to/working/directory" title="Absolute path to working directory" />
+                <button id="resourceDirClearBtn" type="button" title="Clear working directory">✕</button>
+              </span>
               <span id="syncBadge" class="source-badge sync-badge" hidden>In sync with response</span>
               <span id="queueBadge" class="source-badge">Queue: 0</span>
             </div>

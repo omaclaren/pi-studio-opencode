@@ -204,6 +204,49 @@ export function preprocessPrototypeLatexReferences(markdown: string, sourcePath:
   return transformed;
 }
 
+function escapePrototypeHtmlText(text: string): string {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export function decoratePrototypeLatexRenderedHtml(html: string, sourcePath: string | undefined, baseDir: string | undefined): string {
+  const labels = readPrototypeLatexAuxLabels(sourcePath, baseDir);
+  let transformed = String(html ?? "");
+  if (labels.size === 0) return transformed;
+
+  transformed = transformed.replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/g, (match, attrs) => {
+    const typeMatch = String(attrs ?? "").match(/\bdata-reference-type="([^"]+)"/);
+    const labelMatch = String(attrs ?? "").match(/\bdata-reference="([^"]+)"/);
+    if (!typeMatch || !labelMatch) return match;
+    const referenceTypeRaw = String(typeMatch[1] ?? "").trim();
+    const label = String(labelMatch[1] ?? "").trim();
+    const referenceType = referenceTypeRaw === "eqref" || referenceTypeRaw === "autoref" || referenceTypeRaw === "ref"
+      ? referenceTypeRaw
+      : null;
+    if (!referenceType || !label) return match;
+    const formatted = formatPrototypeLatexReference(label, referenceType, labels);
+    if (!formatted) return match;
+    return `<a${attrs}>${escapePrototypeHtmlText(formatted)}</a>`;
+  });
+
+  transformed = transformed.replace(/<math\b[^>]*display="block"[^>]*>[\s\S]*?<\/math>/g, (block) => {
+    if (/studio-display-equation/.test(block)) return block;
+    const labelMatch = block.match(/\\label\s*\{([^}]+)\}/);
+    if (!labelMatch) return block;
+    const label = String(labelMatch[1] ?? "").trim();
+    if (!label) return block;
+    const formatted = formatPrototypeLatexReference(label, "eqref", labels);
+    if (!formatted) return block;
+    return `<div class="studio-display-equation"><div class="studio-display-equation-body">${block}</div><div class="studio-display-equation-number">${escapePrototypeHtmlText(formatted)}</div></div>`;
+  });
+
+  return transformed;
+}
+
 export function injectPrototypeLatexEquationTags(markdown: string, sourcePath: string | undefined, baseDir: string | undefined): string {
   const labels = readPrototypeLatexAuxLabels(sourcePath, baseDir);
   if (labels.size === 0) return markdown;

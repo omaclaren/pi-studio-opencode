@@ -19,6 +19,7 @@ import {
 import { readPrototypeGitDiff } from "./prototype-git-diff.js";
 import {
   buildPrototypePandocBibliographyArgs,
+  decoratePrototypeLatexRenderedHtml,
   injectPrototypeLatexEquationTags,
   preprocessPrototypeLatexReferences,
 } from "./prototype-latex.js";
@@ -781,11 +782,7 @@ async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?
   const markdownWithoutHtmlComments = isLatex ? String(markdown || "") : stripPrototypeMarkdownHtmlComments(String(markdown || ""));
   const markdownWithPreviewPageBreaks = isLatex ? markdownWithoutHtmlComments : replacePrototypePreviewPageBreakCommands(markdownWithoutHtmlComments);
   const sourceWithResolvedRefs = isLatex
-    ? injectPrototypeLatexEquationTags(
-        preprocessPrototypeLatexReferences(markdownWithPreviewPageBreaks, sourcePath, resourcePath),
-        sourcePath,
-        resourcePath,
-      )
+    ? preprocessPrototypeLatexReferences(markdownWithPreviewPageBreaks, sourcePath, resourcePath)
     : markdownWithPreviewPageBreaks;
   const inputFormat = isLatex
     ? "latex"
@@ -845,7 +842,9 @@ async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?
             renderedHtml = bodyMatch[1] ?? renderedHtml;
           }
         }
-        if (!isLatex) {
+        if (isLatex) {
+          renderedHtml = decoratePrototypeLatexRenderedHtml(renderedHtml, sourcePath, resourcePath);
+        } else {
           renderedHtml = decoratePrototypePreviewPageBreakHtml(renderedHtml);
         }
         succeed(stripMathMlAnnotationTags(renderedHtml));

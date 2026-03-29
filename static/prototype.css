@@ -107,7 +107,8 @@ h1 {
 }
 
 button,
-select {
+select,
+.file-label {
   border: 1px solid var(--border-muted);
   background: var(--panel);
   color: var(--text);
@@ -117,23 +118,37 @@ select {
   transition: background-color 120ms ease, border-color 120ms ease, filter 120ms ease;
 }
 
-button {
+button,
+.file-label {
   cursor: pointer;
 }
 
+.file-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-label input {
+  display: none;
+}
+
 button:not(:disabled):hover,
-select:hover {
+select:hover,
+.file-label:hover {
   background: var(--panel-2);
 }
 
 button:focus-visible,
 select:focus-visible,
+.file-label:focus-within,
 textarea:focus-visible {
   outline: 2px solid var(--accent-soft-strong);
   outline-offset: 1px;
 }
 
-button:disabled {
+button:disabled,
+.file-label.is-disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -329,6 +344,36 @@ button.pane-focus-btn.is-active:not(:disabled):hover {
 
 .resource-dir-label {
   cursor: pointer;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-dir-input-wrap {
+  display: none;
+  gap: 4px;
+  align-items: center;
+}
+
+.resource-dir-input-wrap.visible {
+  display: inline-flex;
+}
+
+.resource-dir-input-wrap input[type="text"] {
+  width: 280px;
+  padding: 3px 7px;
+  font-size: 11px;
+  border: 1px solid var(--border-muted);
+  border-radius: 4px;
+  background: var(--editor-bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.resource-dir-input-wrap button {
+  padding: 3px 7px;
+  font-size: 11px;
 }
 
 .hl-heading {
@@ -896,6 +941,34 @@ textarea {
 
 .rendered-markdown math {
   font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", "STIXGeneral", serif;
+}
+
+.rendered-markdown .studio-display-equation {
+  position: relative;
+  margin: 1em 0;
+}
+
+.rendered-markdown .studio-display-equation-body {
+  padding-right: 4.5em;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.rendered-markdown .studio-display-equation-body math[display="block"],
+.rendered-markdown .studio-display-equation-body mjx-container[display="true"] {
+  margin: 0 auto;
+}
+
+.rendered-markdown .studio-display-equation-number {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 0.95em;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .rendered-markdown mjx-container[display="true"] {

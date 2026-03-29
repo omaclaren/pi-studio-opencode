@@ -16,7 +16,10 @@ const state = {
   rightView: "preview",
   editorOriginLabel: "studio editor",
   sourcePath: null,
+  uploadFileName: "",
   workingDir: "",
+  workingDirDraft: "",
+  workingDirEditorOpen: false,
   editorHighlightEnabled: true,
   responseHighlightEnabled: true,
   editorLanguage: "markdown",
@@ -105,13 +108,16 @@ const elements = {
   rightFocusBtn: document.getElementById("rightFocusBtn"),
   saveAsBtn: document.getElementById("saveAsBtn"),
   saveBtn: document.getElementById("saveBtn"),
-  loadFileBtn: document.getElementById("loadFileBtn"),
+  fileInput: document.getElementById("fileInput"),
   loadGitDiffBtn: document.getElementById("loadGitDiffBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   diagnosticsBtn: document.getElementById("diagnosticsBtn"),
   sourceBadge: document.getElementById("sourceBadge"),
   resourceDirBtn: document.getElementById("resourceDirBtn"),
   resourceDirLabel: document.getElementById("resourceDirLabel"),
+  resourceDirInputWrap: document.getElementById("resourceDirInputWrap"),
+  resourceDirInput: document.getElementById("resourceDirInput"),
+  resourceDirClearBtn: document.getElementById("resourceDirClearBtn"),
   syncBadge: document.getElementById("syncBadge"),
   queueBadge: document.getElementById("queueBadge"),
   composerStatusBadge: document.getElementById("composerStatusBadge"),
@@ -1521,8 +1527,8 @@ async function renderMarkdownWithPandoc(markdown) {
       }),
       body: JSON.stringify({
         markdown: String(markdown || ""),
-        sourcePath: state.sourcePath || "",
-        resourceDir: (!state.sourcePath && state.workingDir) ? state.workingDir : "",
+        sourcePath: getEffectiveSourcePath(),
+        resourceDir: (!getEffectiveSourcePath() && state.workingDir) ? state.workingDir : "",
       }),
       signal: controller ? controller.signal : undefined,
     });
@@ -1726,7 +1732,7 @@ function getPdfExportSource() {
     return null;
   }
 
-  const sourcePath = state.sourcePath || "";
+  const sourcePath = getEffectiveSourcePath();
   const resourceDir = (!sourcePath && state.workingDir) ? state.workingDir : "";
   const editorPdfLanguage = state.rightView === "editor-preview" ? String(state.editorLanguage || "") : "";
   const isLatex = state.rightView === "editor-preview"
@@ -2312,13 +2318,17 @@ function renderEditorMeta() {
   const inSync = Boolean(displayedResponseNormalized) && editorTextNormalized === displayedResponseNormalized;
 
   elements.sourceBadge.textContent = `Editor origin: ${state.editorOriginLabel}`;
-  if (elements.resourceDirBtn) {
-    elements.resourceDirBtn.hidden = Boolean(state.sourcePath);
-  }
   if (elements.resourceDirLabel) {
-    elements.resourceDirLabel.hidden = Boolean(state.sourcePath) || !state.workingDir;
     elements.resourceDirLabel.textContent = state.workingDir ? `Working dir: ${state.workingDir}` : "";
   }
+  if (elements.resourceDirInput) {
+    elements.resourceDirInput.value = state.workingDirEditorOpen ? state.workingDirDraft : state.workingDir;
+  }
+  showWorkingDirState(
+    state.sourcePath
+      ? "button"
+      : (state.workingDirEditorOpen ? "input" : (state.workingDir ? "label" : "button")),
+  );
   elements.queueBadge.textContent = `Queue: ${snapshot?.state?.queueLength ?? 0}`;
   elements.composerStatusBadge.textContent = `Run state: ${snapshot?.state?.runState ?? "-"}`;
   elements.backendStatusBadge.textContent = `Backend: ${snapshot?.state?.lastBackendStatus ?? "-"}`;
@@ -2588,10 +2598,13 @@ function updateActionState() {
   elements.queueBtn.disabled = !snapshot || state.busy || runState !== "running" || activeRequestKind === "critique" || !hasPrompt;
   elements.copyDraftBtn.disabled = !hasPrompt;
   if (elements.saveAsBtn) elements.saveAsBtn.disabled = state.busy || !hasPrompt;
-  if (elements.saveBtn) elements.saveBtn.disabled = state.busy || !hasPrompt || !state.sourcePath;
-  if (elements.loadFileBtn) elements.loadFileBtn.disabled = state.busy;
+  if (elements.saveBtn) elements.saveBtn.disabled = state.busy || !hasPrompt || !getEffectiveSourcePath();
+  if (elements.fileInput) elements.fileInput.disabled = state.busy;
+  if (elements.fileInput?.closest(".file-label")) elements.fileInput.closest(".file-label").classList.toggle("is-disabled", state.busy);
   if (elements.loadGitDiffBtn) elements.loadGitDiffBtn.disabled = state.busy;
   if (elements.resourceDirBtn) elements.resourceDirBtn.disabled = state.busy || Boolean(state.sourcePath);
+  if (elements.resourceDirInput) elements.resourceDirInput.disabled = state.busy || Boolean(state.sourcePath);
+  if (elements.resourceDirClearBtn) elements.resourceDirClearBtn.disabled = state.busy || Boolean(state.sourcePath);
   if (elements.insertHeaderBtn) elements.insertHeaderBtn.disabled = state.busy;
   if (elements.annotationModeSelect) elements.annotationModeSelect.disabled = state.busy;
   if (elements.stripAnnotationsBtn) elements.stripAnnotationsBtn.disabled = state.busy || !hasAnnotationMarkers(elements.promptInput.value);
@@ -2775,14 +2788,41 @@ async function pollSnapshotOnce() {
   }
 }
 
+function getDerivedUploadSourcePath() {
+  if (state.sourcePath || !state.uploadFileName || !state.workingDir) return "";
+  return state.workingDir.replace(/\/$/, "") + "/" + state.uploadFileName;
+}
+
+function getEffectiveSourcePath() {
+  return state.sourcePath || getDerivedUploadSourcePath() || "";
+}
+
+function showWorkingDirState(mode) {
+  if (!elements.resourceDirBtn || !elements.resourceDirLabel || !elements.resourceDirInputWrap) return;
+  const hasFilePath = Boolean(state.sourcePath);
+  if (hasFilePath) {
+    elements.resourceDirBtn.hidden = true;
+    elements.resourceDirLabel.hidden = true;
+    elements.resourceDirInputWrap.classList.remove("visible");
+    return;
+  }
+  elements.resourceDirBtn.hidden = mode !== "button";
+  elements.resourceDirLabel.hidden = mode !== "label";
+  elements.resourceDirInputWrap.classList.toggle("visible", mode === "input");
+}
+
 function setEditorText(text, originLabel, options = {}) {
   elements.promptInput.value = text;
   state.editorOriginLabel = originLabel;
   if (Object.prototype.hasOwnProperty.call(options, "sourcePath")) {
     state.sourcePath = options.sourcePath ? String(options.sourcePath) : null;
   }
+  if (Object.prototype.hasOwnProperty.call(options, "uploadFileName")) {
+    state.uploadFileName = options.uploadFileName ? String(options.uploadFileName) : "";
+  }
   if (Object.prototype.hasOwnProperty.call(options, "workingDir")) {
     state.workingDir = options.workingDir ? String(options.workingDir) : "";
+    state.workingDirDraft = state.workingDir;
   }
   if (options.language) {
     setEditorLanguage(String(options.language));
@@ -2793,7 +2833,7 @@ function setEditorText(text, originLabel, options = {}) {
 }
 
 function getEditorContextPaths() {
-  const sourcePath = state.sourcePath || "";
+  const sourcePath = getEffectiveSourcePath();
   const baseDir = (!sourcePath && state.workingDir) ? state.workingDir : "";
   return {
     sourcePath,
@@ -2802,8 +2842,9 @@ function getEditorContextPaths() {
 }
 
 function describeSourceForAnnotation() {
-  if (state.sourcePath) {
-    return `file ${state.sourcePath.split(/[\\/]/).pop() || state.sourcePath}`;
+  const effectivePath = getEffectiveSourcePath();
+  if (effectivePath) {
+    return `file ${effectivePath.split(/[\\/]/).pop() || effectivePath}`;
   }
   if (/response/i.test(state.editorOriginLabel)) {
     return "last model response";
@@ -2843,7 +2884,7 @@ function stripAnnotationHeader(text) {
 }
 
 function buildAnnotatedSaveSuggestion() {
-  const effectivePath = state.sourcePath || "";
+  const effectivePath = getEffectiveSourcePath();
   if (effectivePath) {
     const parts = String(effectivePath).split(/[\\/]/);
     const fileName = parts.pop() || "draft.md";
@@ -2851,7 +2892,9 @@ function buildAnnotatedSaveSuggestion() {
     const stem = fileName.replace(/\.[^.]+$/, "") || "draft";
     return dir + stem + ".annotated.md";
   }
-  const baseName = `draft.annotated.md`;
+  const rawName = state.uploadFileName || "draft.md";
+  const stem = rawName.replace(/\.[^.]+$/, "") || "draft";
+  const baseName = `${stem}.annotated.md`;
   if (state.workingDir) {
     return state.workingDir.replace(/\/$/, "") + "/" + baseName;
   }
@@ -2865,9 +2908,10 @@ function updateAnnotatedReplyHeaderButton() {
 }
 
 function buildSuggestedSavePath() {
-  if (state.sourcePath) return state.sourcePath;
+  const effectivePath = getEffectiveSourcePath();
+  if (effectivePath) return effectivePath;
   const ext = preferredExtensionForLanguage(state.editorLanguage);
-  const baseName = `draft.${ext}`;
+  const baseName = state.uploadFileName || `draft.${ext}`;
   if (state.workingDir) {
     return state.workingDir.replace(/\/$/, "") + "/" + baseName;
   }
@@ -2894,6 +2938,7 @@ async function loadGitDiff() {
     const repoRoot = String(data.repoRoot || context.baseDir || "").trim();
     setEditorText(String(data.content || ""), label, {
       sourcePath: null,
+      uploadFileName: "",
       workingDir: repoRoot,
       language: "diff",
     });
@@ -2903,15 +2948,23 @@ async function loadGitDiff() {
   }
 }
 
-async function loadFileContent() {
-  const suggested = state.sourcePath || (state.workingDir ? state.workingDir.replace(/\/$/, "") + "/" : "./");
-  const path = window.prompt("Load file content from:", suggested);
-  if (!path) return;
+async function loadFileContent(file) {
+  if (!file) return;
+
   try {
-    const data = await postJson("/api/file/load", { path, baseDir: state.workingDir || undefined });
-    const language = detectLanguageFromName(data.path || data.label || "") || state.editorLanguage;
-    setEditorText(data.content || "", data.label || data.path || path, { sourcePath: data.path || null, language, workingDir: "" });
-    setTransientStatus(`Loaded ${data.label || data.path || path}.`, "success");
+    const text = await file.text();
+    const language = detectLanguageFromName(file.name || "") || state.editorLanguage;
+    const preservedWorkingDir = state.workingDir;
+    if (elements.fileInput) {
+      elements.fileInput.value = "";
+    }
+    setEditorText(text, `upload: ${file.name || "file"}`, {
+      sourcePath: null,
+      uploadFileName: file.name || "",
+      workingDir: preservedWorkingDir,
+      language,
+    });
+    setTransientStatus(`Loaded ${file.name || "file"}.`, "success");
   } catch (error) {
     setTransientStatus(error instanceof Error ? error.message : String(error), "error");
   }
@@ -2928,7 +2981,7 @@ async function saveEditorAs() {
   try {
     const data = await postJson("/api/file/save", { path, content, baseDir: state.workingDir || undefined });
     const language = detectLanguageFromName(data.path || data.label || path) || state.editorLanguage;
-    setEditorText(content, data.label || data.path || path, { sourcePath: data.path || null, language, workingDir: "" });
+    setEditorText(content, data.label || data.path || path, { sourcePath: data.path || null, uploadFileName: "", language, workingDir: "" });
     setTransientStatus(`Saved editor text to ${data.label || data.path || path}.`, "success");
   } catch (error) {
     setTransientStatus(error instanceof Error ? error.message : String(error), "error");
@@ -2941,14 +2994,15 @@ async function saveEditor() {
     setTransientStatus("Editor is empty. Nothing to save.", "warning");
     return;
   }
-  if (!state.sourcePath) {
-    setTransientStatus("Save editor requires a file path. Use Save editor as… or load a file first.", "warning");
+  const effectivePath = getEffectiveSourcePath();
+  if (!effectivePath) {
+    setTransientStatus("Save editor requires a file path. Load a file, set a working dir, or use Save editor as…", "warning");
     return;
   }
   try {
-    const data = await postJson("/api/file/save", { path: state.sourcePath, content });
-    setEditorText(content, data.label || state.sourcePath, { sourcePath: data.path || state.sourcePath });
-    setTransientStatus(`Saved ${data.label || state.sourcePath}.`, "success");
+    const data = await postJson("/api/file/save", { path: effectivePath, content });
+    setEditorText(content, data.label || effectivePath, { sourcePath: data.path || effectivePath, uploadFileName: "" });
+    setTransientStatus(`Saved ${data.label || effectivePath}.`, "success");
   } catch (error) {
     setTransientStatus(error instanceof Error ? error.message : String(error), "error");
   }
@@ -2996,16 +3050,29 @@ async function saveAnnotatedCopy() {
   }
 }
 
-function chooseWorkingDir() {
+function openWorkingDirEditor() {
   if (state.sourcePath) {
     setTransientStatus("Working dir is only needed for non-file-backed editor content.", "warning");
     return;
   }
-  const suggested = state.workingDir || "./";
-  const result = window.prompt("Set working directory for preview/resource resolution (leave blank to clear):", suggested);
-  if (result === null) return;
-  const trimmed = result.trim();
+  state.workingDirDraft = state.workingDir;
+  state.workingDirEditorOpen = true;
+  render();
+  if (elements.resourceDirInput) {
+    elements.resourceDirInput.value = state.workingDirDraft;
+    elements.resourceDirInput.focus();
+    elements.resourceDirInput.select();
+  }
+}
+
+function applyWorkingDir() {
+  const trimmed = String(state.workingDirDraft || "").trim();
   state.workingDir = trimmed;
+  state.workingDirDraft = trimmed;
+  state.workingDirEditorOpen = false;
+  if (elements.resourceDirInput) {
+    elements.resourceDirInput.value = trimmed;
+  }
   render();
   setTransientStatus(trimmed ? `Working dir set to ${trimmed}.` : "Working dir cleared.", "success");
 }
@@ -3230,7 +3297,7 @@ function loadSelectedResponse() {
   const originLabel = state.rightView === "thinking"
     ? "assistant thinking"
     : (display.kind === "active" ? "live response" : "selected response");
-  setEditorText(responseText, originLabel, { sourcePath: null });
+  setEditorText(responseText, originLabel, { sourcePath: null, uploadFileName: "" });
   setTransientStatus(state.rightView === "thinking" ? "Loaded thinking into editor." : "Loaded response into editor.", "success");
 }
 
@@ -3246,7 +3313,7 @@ function loadSelectedCritiqueNotes() {
     setTransientStatus("No critique notes (Assessment/Critiques) found in the selected response.", "warning");
     return;
   }
-  setEditorText(notes, "critique notes", { sourcePath: null });
+  setEditorText(notes, "critique notes", { sourcePath: null, uploadFileName: "" });
   setTransientStatus("Loaded critique notes into editor.", "success");
 }
 
@@ -3258,7 +3325,7 @@ function loadSelectedCritiqueFull() {
     setTransientStatus("The selected response is not a structured critique.", "warning");
     return;
   }
-  setEditorText(fullCritique, "full critique", { sourcePath: null });
+  setEditorText(fullCritique, "full critique", { sourcePath: null, uploadFileName: "" });
   setTransientStatus("Loaded full critique into editor.", "success");
 }
 
@@ -3273,7 +3340,7 @@ function loadSelectedPrompt() {
     setTransientStatus("Prompt unavailable for the selected response.", "warning");
     return;
   }
-  setEditorText(promptSource, getHistoryPromptSourceStateLabel(item), { sourcePath: null });
+  setEditorText(promptSource, getHistoryPromptSourceStateLabel(item), { sourcePath: null, uploadFileName: "" });
   setTransientStatus(getHistoryPromptLoadedStatus(item), "success");
 }
 
@@ -3306,7 +3373,7 @@ function toggleDiagnostics() {
 
 function handlePromptInputChange() {
   const normalized = normalizedText(elements.promptInput.value);
-  if (!state.sourcePath && normalized !== state.lastLoadedIntoEditorNormalized) {
+  if (!state.sourcePath && !state.uploadFileName && normalized !== state.lastLoadedIntoEditorNormalized) {
     state.editorOriginLabel = normalized ? "studio editor draft" : "studio editor";
   }
   if (state.editorHighlightEnabled) {
@@ -3437,17 +3504,47 @@ function wireEvents() {
   if (elements.saveBtn) {
     elements.saveBtn.addEventListener("click", () => void saveEditor());
   }
-  if (elements.loadFileBtn) {
-    elements.loadFileBtn.addEventListener("click", () => void loadFileContent());
+  if (elements.fileInput) {
+    elements.fileInput.addEventListener("change", () => {
+      const file = elements.fileInput.files && elements.fileInput.files[0];
+      if (!file) return;
+      void loadFileContent(file);
+    });
   }
   if (elements.loadGitDiffBtn) {
     elements.loadGitDiffBtn.addEventListener("click", () => void loadGitDiff());
   }
   if (elements.resourceDirBtn) {
-    elements.resourceDirBtn.addEventListener("click", () => chooseWorkingDir());
+    elements.resourceDirBtn.addEventListener("click", () => openWorkingDirEditor());
   }
   if (elements.resourceDirLabel) {
-    elements.resourceDirLabel.addEventListener("click", () => chooseWorkingDir());
+    elements.resourceDirLabel.addEventListener("click", () => openWorkingDirEditor());
+  }
+  if (elements.resourceDirInput) {
+    elements.resourceDirInput.addEventListener("input", () => {
+      state.workingDirDraft = elements.resourceDirInput.value;
+    });
+    elements.resourceDirInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyWorkingDir();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        state.workingDirDraft = state.workingDir;
+        state.workingDirEditorOpen = false;
+        render();
+      }
+    });
+  }
+  if (elements.resourceDirClearBtn) {
+    elements.resourceDirClearBtn.addEventListener("click", () => {
+      state.workingDir = "";
+      state.workingDirDraft = "";
+      state.workingDirEditorOpen = false;
+      if (elements.resourceDirInput) elements.resourceDirInput.value = "";
+      render();
+      setTransientStatus("Working dir cleared.", "success");
+    });
   }
   if (elements.insertHeaderBtn) {
     elements.insertHeaderBtn.addEventListener("click", () => toggleAnnotatedReplyHeader());
