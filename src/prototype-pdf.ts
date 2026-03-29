@@ -1,14 +1,20 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import {
+  buildPrototypePandocBibliographyArgs,
+  injectPrototypeLatexEquationTags,
+  preprocessPrototypeLatexReferences,
+} from "./prototype-latex.js";
 
 export const PROTOTYPE_PDF_EXPORT_MAX_CHARS = 400_000;
 
 export type PrototypePdfRenderOptions = {
   isLatex?: boolean;
   resourcePath?: string;
+  sourcePath?: string;
   editorPdfLanguage?: string;
 };
 
@@ -23,13 +29,6 @@ type PrototypePdfAlignedImageBlock = {
   markerId: number;
 };
 
-function expandHome(input: string): string {
-  if (!input) return input;
-  if (input === "~") return homedir();
-  if (input.startsWith("~/")) return resolve(homedir(), input.slice(2));
-  return input;
-}
-
 async function resolvePrototypePdfWorkingDir(baseDir: string | undefined): Promise<string | undefined> {
   const normalized = typeof baseDir === "string" ? baseDir.trim() : "";
   if (!normalized) return undefined;
@@ -38,83 +37,6 @@ async function resolvePrototypePdfWorkingDir(baseDir: string | undefined): Promi
   } catch {
     return undefined;
   }
-}
-
-function stripPrototypeLatexComments(text: string): string {
-  const lines = String(text ?? "").replace(/\r\n/g, "\n").split("\n");
-  return lines.map((line) => {
-    let out = "";
-    let backslashRun = 0;
-    for (let i = 0; i < line.length; i += 1) {
-      const ch = line[i]!;
-      if (ch === "%" && backslashRun % 2 === 0) break;
-      out += ch;
-      if (ch === "\\") backslashRun += 1;
-      else backslashRun = 0;
-    }
-    return out;
-  }).join("\n");
-}
-
-function collectPrototypeLatexBibliographyCandidates(markdown: string): string[] {
-  const stripped = stripPrototypeLatexComments(markdown);
-  const candidates: string[] = [];
-  const seen = new Set<string>();
-  const pushCandidate = (raw: string) => {
-    let candidate = String(raw ?? "").trim().replace(/^file:/i, "").replace(/^['"]|['"]$/g, "");
-    if (!candidate) return;
-    if (!/\.[A-Za-z0-9]+$/.test(candidate)) candidate += ".bib";
-    if (seen.has(candidate)) return;
-    seen.add(candidate);
-    candidates.push(candidate);
-  };
-
-  for (const match of stripped.matchAll(/\\bibliography\s*\{([^}]+)\}/g)) {
-    const rawList = match[1] ?? "";
-    for (const part of rawList.split(",")) {
-      pushCandidate(part);
-    }
-  }
-
-  for (const match of stripped.matchAll(/\\addbibresource(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
-    pushCandidate(match[1] ?? "");
-  }
-
-  return candidates;
-}
-
-async function resolvePrototypeLatexBibliographyPaths(markdown: string, baseDir: string | undefined): Promise<string[]> {
-  const workingDir = await resolvePrototypePdfWorkingDir(baseDir);
-  if (!workingDir) return [];
-  const resolvedPaths: string[] = [];
-  const seen = new Set<string>();
-
-  for (const candidate of collectPrototypeLatexBibliographyCandidates(markdown)) {
-    const expanded = expandHome(candidate);
-    const resolvedPath = isAbsolute(expanded) ? expanded : resolve(workingDir, expanded);
-    try {
-      if (!(await stat(resolvedPath)).isFile()) continue;
-      if (seen.has(resolvedPath)) continue;
-      seen.add(resolvedPath);
-      resolvedPaths.push(resolvedPath);
-    } catch {
-      // Ignore missing bibliography files; pandoc can still render the document body.
-    }
-  }
-
-  return resolvedPaths;
-}
-
-async function buildPrototypePandocBibliographyArgs(markdown: string, isLatex: boolean | undefined, baseDir: string | undefined): Promise<string[]> {
-  if (!isLatex) return [];
-  const bibliographyPaths = await resolvePrototypeLatexBibliographyPaths(markdown, baseDir);
-  if (bibliographyPaths.length === 0) return [];
-  return [
-    "--citeproc",
-    "-M",
-    "reference-section-title=References",
-    ...bibliographyPaths.flatMap((path) => ["--bibliography", path]),
-  ];
 }
 
 function normalizePrototypeEditorLanguage(language: string | undefined): string | undefined {
@@ -1025,12 +947,19 @@ async function renderPrototypePdfFromGeneratedLatex(
 export async function renderPrototypePdfWithPandoc(markdown: string, options: PrototypePdfRenderOptions = {}): Promise<{ pdf: Buffer; warning?: string }> {
   const source = String(markdown ?? "");
   const isLatex = options.isLatex === true;
+  const latexPdfSource = isLatex
+    ? injectPrototypeLatexEquationTags(
+        preprocessPrototypeLatexReferences(source, options.sourcePath, options.resourcePath),
+        options.sourcePath,
+        options.resourcePath,
+      )
+    : source;
   const pandocCommand = process.env.PANDOC_PATH?.trim() || "pandoc";
   const pdfEngine = process.env.PANDOC_PDF_ENGINE?.trim() || "xelatex";
-  const effectiveEditorLanguage = inferPrototypePdfLanguage(source, options.editorPdfLanguage);
+  const effectiveEditorLanguage = inferPrototypePdfLanguage(latexPdfSource, options.editorPdfLanguage);
   const pdfCalloutTransform = !isLatex && (!effectiveEditorLanguage || effectiveEditorLanguage === "markdown")
-    ? preprocessPrototypeMarkdownCalloutsForPdf(source)
-    : { markdown: source, blocks: [] as PrototypePdfCalloutBlock[] };
+    ? preprocessPrototypeMarkdownCalloutsForPdf(latexPdfSource)
+    : { markdown: latexPdfSource, blocks: [] as PrototypePdfCalloutBlock[] };
   const pdfAlignedImageTransform = !isLatex && (!effectiveEditorLanguage || effectiveEditorLanguage === "markdown")
     ? preprocessPrototypeMarkdownImageAlignmentForPdf(pdfCalloutTransform.markdown)
     : { markdown: pdfCalloutTransform.markdown, blocks: [] as PrototypePdfAlignedImageBlock[] };

@@ -17,6 +17,11 @@ import {
   type PrototypeRequestedCritiqueLens,
 } from "./prototype-critique.js";
 import { readPrototypeGitDiff } from "./prototype-git-diff.js";
+import {
+  buildPrototypePandocBibliographyArgs,
+  injectPrototypeLatexEquationTags,
+  preprocessPrototypeLatexReferences,
+} from "./prototype-latex.js";
 import type { StudioHost, StudioHostCapabilities, StudioHostHistoryItem, StudioHostState } from "./studio-host-types.js";
 
 export type PrototypeModelCatalogEntry = {
@@ -770,22 +775,30 @@ function stripMathMlAnnotationTags(html: string): string {
     .replace(/<annotation\b[\s\S]*?<\/annotation>/gi, "");
 }
 
-async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?: string): Promise<string> {
+async function renderPrototypeMarkdownWithPandoc(markdown: string, resourcePath?: string, sourcePath?: string): Promise<string> {
   const pandocCommand = process.env.PANDOC_PATH?.trim() || "pandoc";
   const isLatex = /\\documentclass\b|\\begin\{document\}/.test(markdown);
   const markdownWithoutHtmlComments = isLatex ? String(markdown || "") : stripPrototypeMarkdownHtmlComments(String(markdown || ""));
   const markdownWithPreviewPageBreaks = isLatex ? markdownWithoutHtmlComments : replacePrototypePreviewPageBreakCommands(markdownWithoutHtmlComments);
+  const sourceWithResolvedRefs = isLatex
+    ? injectPrototypeLatexEquationTags(
+        preprocessPrototypeLatexReferences(markdownWithPreviewPageBreaks, sourcePath, resourcePath),
+        sourcePath,
+        resourcePath,
+      )
+    : markdownWithPreviewPageBreaks;
   const inputFormat = isLatex
     ? "latex"
     : "markdown+lists_without_preceding_blankline-blank_before_blockquote-blank_before_header+tex_math_dollars+tex_math_single_backslash+tex_math_double_backslash+autolink_bare_uris-raw_html";
-  const args = ["-f", inputFormat, "-t", "html5", "--mathml", "--wrap=none"];
+  const bibliographyArgs = await buildPrototypePandocBibliographyArgs(markdown, isLatex, resourcePath);
+  const args = ["-f", inputFormat, "-t", "html5", "--mathml", "--wrap=none", ...bibliographyArgs];
   if (resourcePath) {
     args.push(`--resource-path=${resourcePath}`);
     args.push("--embed-resources", "--standalone");
   }
   const normalizedMarkdown = isLatex
-    ? markdownWithPreviewPageBreaks
-    : normalizeObsidianImages(normalizeMathDelimiters(markdownWithPreviewPageBreaks));
+    ? sourceWithResolvedRefs
+    : normalizeObsidianImages(normalizeMathDelimiters(sourceWithResolvedRefs));
   const pandocWorkingDir = await resolvePrototypePandocWorkingDir(resourcePath);
 
   return await new Promise<string>((resolvePromise, rejectPromise) => {
@@ -1171,7 +1184,7 @@ export async function startPrototypeServer(
         const sourcePath = typeof payload.sourcePath === "string" ? payload.sourcePath : "";
         const resourceDir = typeof payload.resourceDir === "string" ? payload.resourceDir : "";
         const resourcePath = resolvePrototypeBaseDir(sourcePath || undefined, resourceDir || undefined, options.directory);
-        const html = await renderPrototypeMarkdownWithPandoc(markdown, resourcePath);
+        const html = await renderPrototypeMarkdownWithPandoc(markdown, resourcePath, sourcePath || undefined);
         sendJson(response, 200, { ok: true, html, renderer: "pandoc" });
         return;
       }
@@ -1204,6 +1217,7 @@ export async function startPrototypeServer(
         const { pdf, warning } = await renderPrototypePdfWithPandoc(markdown, {
           isLatex: requestedIsLatex,
           resourcePath,
+          sourcePath: sourcePath || undefined,
           editorPdfLanguage: requestedEditorPdfLanguage,
         });
         const headers: Record<string, string> = {
