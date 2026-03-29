@@ -31,10 +31,11 @@ The main goal is a good OpenCode version of Studio rather than full feature pari
 
 ## Install
 
-Recommended installation:
+Run the package's installer CLI with one of:
 
 ```bash
 bunx pi-studio-opencode@latest install
+npx pi-studio-opencode@latest install
 ```
 
 That updates your OpenCode config to add:
@@ -42,10 +43,18 @@ That updates your OpenCode config to add:
 - the `pi-studio-opencode@latest` plugin entry
 - the `/studio` command entry
 
+If you prefer a persistent global CLI instead of a one-shot runner:
+
+```bash
+npm install -g pi-studio-opencode
+pi-studio-opencode install
+```
+
 For a project-local install instead of a user-wide one:
 
 ```bash
 bunx pi-studio-opencode@latest install --project
+npx pi-studio-opencode@latest install --project
 ```
 
 Then restart OpenCode and run:
@@ -53,6 +62,8 @@ Then restart OpenCode and run:
 ```text
 /studio
 ```
+
+> `bunx` / `npx` are recommended because `pi-studio-opencode` is primarily used as a CLI installer here. A plain `npm install` by itself only downloads the package; it does not update your OpenCode config or register the `/studio` command.
 
 ## Manual config
 
