@@ -5,9 +5,12 @@ import {
   DEFAULT_STUDIO_COMMAND_NAME,
   formatOpencodeConfig,
   mergePiStudioOpencodeIntoConfig,
+  mergePiStudioOpencodeIntoTuiConfig,
   parseOpencodeConfigText,
+  type MergePiStudioTuiConfigResult,
   type MergePiStudioOpencodeConfigResult,
   type OpencodeConfigFile,
+  type TuiConfigFile,
 } from "./install-config.js";
 
 const DEFAULT_PUBLISHED_PLUGIN_SPEC = "pi-studio-opencode@latest";
@@ -23,6 +26,8 @@ type InstallOptions = {
 
 export type InstallConfigResult = MergePiStudioOpencodeConfigResult & {
   configPath: string;
+  tuiConfigPath: string;
+  tui: MergePiStudioTuiConfigResult;
   scope: "user" | "project" | "explicit";
 };
 
@@ -56,17 +61,38 @@ async function pickExistingConfigPath(candidates: string[]): Promise<string> {
   return candidates[0]!;
 }
 
-async function resolveInstallConfigPath(options: InstallOptions): Promise<{ path: string; scope: InstallConfigResult["scope"] }> {
+function resolveExplicitTuiConfigPath(configPath: string): string {
+  const resolvedPath = resolve(expandHome(configPath));
+  const name = resolvedPath.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  if (name === "tui.json" || name === "tui.jsonc") {
+    return resolvedPath;
+  }
+  return join(dirname(resolvedPath), "tui.json");
+}
+
+async function resolveInstallConfigPaths(options: InstallOptions): Promise<{
+  opencodePath: string;
+  tuiPath: string;
+  scope: InstallConfigResult["scope"];
+}> {
   if (options.configPath) {
-    return { path: resolve(expandHome(options.configPath)), scope: "explicit" };
+    return {
+      opencodePath: resolve(expandHome(options.configPath)),
+      tuiPath: resolveExplicitTuiConfigPath(options.configPath),
+      scope: "explicit",
+    };
   }
 
   if (options.projectDir) {
     const directory = resolve(expandHome(options.projectDir));
     return {
-      path: await pickExistingConfigPath([
+      opencodePath: await pickExistingConfigPath([
         join(directory, ".opencode", "opencode.jsonc"),
         join(directory, ".opencode", "opencode.json"),
+      ]),
+      tuiPath: await pickExistingConfigPath([
+        join(directory, ".opencode", "tui.json"),
+        join(directory, ".opencode", "tui.jsonc"),
       ]),
       scope: "project",
     };
@@ -74,9 +100,13 @@ async function resolveInstallConfigPath(options: InstallOptions): Promise<{ path
 
   const configDir = getXdgConfigDirectory();
   return {
-    path: await pickExistingConfigPath([
+    opencodePath: await pickExistingConfigPath([
       join(configDir, "opencode", "opencode.jsonc"),
       join(configDir, "opencode", "opencode.json"),
+    ]),
+    tuiPath: await pickExistingConfigPath([
+      join(configDir, "opencode", "tui.json"),
+      join(configDir, "opencode", "tui.jsonc"),
     ]),
     scope: "user",
   };
@@ -94,23 +124,39 @@ async function readExistingConfig(path: string): Promise<OpencodeConfigFile> {
   }
 }
 
+async function readExistingTuiConfig(path: string): Promise<TuiConfigFile> {
+  return readExistingConfig(path) as Promise<TuiConfigFile>;
+}
+
 export async function installPiStudioOpencode(options: InstallOptions): Promise<InstallConfigResult> {
-  const target = await resolveInstallConfigPath(options);
-  const config = await readExistingConfig(target.path);
+  const target = await resolveInstallConfigPaths(options);
+  const config = await readExistingConfig(target.opencodePath);
+  const tuiConfig = await readExistingTuiConfig(target.tuiPath);
   const result = mergePiStudioOpencodeIntoConfig(config, {
     pluginSpec: options.pluginSpec,
     packageName: options.packageName,
     commandName: options.commandName,
   });
+  const tuiResult = mergePiStudioOpencodeIntoTuiConfig(tuiConfig, {
+    pluginSpec: options.pluginSpec,
+    packageName: options.packageName,
+  });
 
-  if (result.changed || !(await pathExists(target.path))) {
-    await mkdir(dirname(target.path), { recursive: true });
-    await writeFile(target.path, formatOpencodeConfig(result.config), "utf8");
+  if (result.changed || !(await pathExists(target.opencodePath))) {
+    await mkdir(dirname(target.opencodePath), { recursive: true });
+    await writeFile(target.opencodePath, formatOpencodeConfig(result.config), "utf8");
+  }
+
+  if (tuiResult.changed || !(await pathExists(target.tuiPath))) {
+    await mkdir(dirname(target.tuiPath), { recursive: true });
+    await writeFile(target.tuiPath, formatOpencodeConfig(tuiResult.config), "utf8");
   }
 
   return {
     ...result,
-    configPath: target.path,
+    configPath: target.opencodePath,
+    tuiConfigPath: target.tuiPath,
+    tui: tuiResult,
     scope: target.scope,
   };
 }
@@ -181,6 +227,7 @@ export async function runInstallCli(argv: string[]): Promise<void> {
   const result = await installPiStudioOpencode(options);
 
   console.log(`Updated OpenCode config: ${result.configPath}`);
+  console.log(`Updated OpenCode TUI config: ${result.tuiConfigPath}`);
   console.log(`Scope: ${result.scope}`);
 
   if (result.addedPlugin) {
@@ -189,17 +236,19 @@ export async function runInstallCli(argv: string[]): Promise<void> {
     console.log(`Plugin already configured: ${result.existingPluginSpec}`);
   }
 
-  if (result.addedCommand) {
-    console.log(`Added /${options.commandName} command.`);
-  } else {
-    console.log(`/${options.commandName} command already present.`);
+  if (result.removedCommand) {
+    console.log(`Removed legacy /${options.commandName} command entry.`);
   }
+  console.log(`/${options.commandName} is provided by the plug-in itself.`);
 
   if (result.setSchema) {
     console.log("Set OpenCode config schema.");
   }
+  if (result.tui.setSchema) {
+    console.log("Set OpenCode TUI config schema.");
+  }
 
-  if (!result.changed) {
+  if (!result.changed && !result.tui.changed) {
     console.log("No changes were needed.");
   }
 

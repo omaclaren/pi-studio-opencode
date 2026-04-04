@@ -6,6 +6,7 @@ import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import type { OpencodeClient as V2OpencodeClient } from "@opencode-ai/sdk/v2";
 import { createOpencodeStudioHost, type OpencodeMessageTokenUsage, type OpencodeStudioHostTelemetryEvent } from "./host-opencode.js";
 import { renderPrototypePdfWithPandoc, sanitizePrototypePdfFilename, PROTOTYPE_PDF_EXPORT_MAX_CHARS } from "./prototype-pdf.js";
 import { buildPrototypeThemeStylesheet, readPrototypeThemeDescriptor, type PrototypeThemeDescriptor } from "./prototype-theme.js";
@@ -34,6 +35,7 @@ export type PrototypeModelCatalogEntry = {
 export type PrototypeServerOptions = {
   directory: string;
   baseUrl?: string;
+  clientV2?: V2OpencodeClient;
   sessionId?: string;
   title?: string;
   host: string;
@@ -140,8 +142,30 @@ function createPrototypeAccessToken(): string {
   return randomUUID();
 }
 
-function buildPrototypeAccessUrl(host: string, port: number, token: string): string {
-  return `http://${host}:${port}/?token=${encodeURIComponent(token)}`;
+export function normalizePrototypeAccessHost(host: string): string {
+  const trimmed = String(host ?? "").trim();
+  if (!trimmed || trimmed === "0.0.0.0" || trimmed === "::") {
+    return "127.0.0.1";
+  }
+
+  const ipv4Mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(trimmed);
+  if (ipv4Mapped) {
+    return ipv4Mapped[1]!;
+  }
+
+  if (trimmed.includes(":") && !trimmed.startsWith("[") && !trimmed.endsWith("]")) {
+    return `[${trimmed}]`;
+  }
+
+  return trimmed;
+}
+
+export function buildPrototypeBaseUrl(host: string, port: number): string {
+  return `http://${normalizePrototypeAccessHost(host)}:${port}`;
+}
+
+export function buildPrototypeAccessUrl(host: string, port: number, token: string): string {
+  return `${buildPrototypeBaseUrl(host, port)}/?token=${encodeURIComponent(token)}`;
 }
 
 function readPrototypeRequestToken(request: IncomingMessage, url: URL): string {
@@ -1041,6 +1065,7 @@ export async function startPrototypeServer(
     return await createOpencodeStudioHost({
       directory: hostOptions.directory,
       baseUrl: hostOptions.baseUrl,
+      clientV2: hostOptions.clientV2,
       sessionId: hostOptions.sessionId,
       title: hostOptions.title,
       eventLogger,
@@ -1235,7 +1260,9 @@ export async function startPrototypeServer(
         const { document, requestedLens } = normalizeCritiqueRequest(payload);
         const resolvedLens = resolvePrototypeCritiqueLens(requestedLens, document);
         const prompt = buildPrototypeCritiquePrompt(document, resolvedLens);
-        await host.startRun(prompt);
+        void host.startRun(prompt).catch((error) => {
+          eventLogger(`[api/critique] ${error instanceof Error ? error.message : String(error)}`);
+        });
         rememberActiveRequestMetadata({ requestKind: "critique", critiqueLens: resolvedLens });
         sendJson(response, 200, { ok: true, lens: resolvedLens, snapshot: buildSnapshot() });
         return;
@@ -1243,7 +1270,9 @@ export async function startPrototypeServer(
 
       if (request.method === "POST" && url.pathname === "/api/run") {
         const payload = await readJsonBody<{ prompt?: string }>(request);
-        await host.startRun(normalizePrompt(payload));
+        void host.startRun(normalizePrompt(payload)).catch((error) => {
+          eventLogger(`[api/run] ${error instanceof Error ? error.message : String(error)}`);
+        });
         sendJson(response, 200, { ok: true, snapshot: buildSnapshot() });
         return;
       }
@@ -1299,13 +1328,14 @@ export async function startPrototypeServer(
     listenHost = info.address;
   }
 
-  const baseUrl = `http://${listenHost}:${listenPort}`;
+  const baseUrl = buildPrototypeBaseUrl(listenHost, listenPort);
+  const accessHost = normalizePrototypeAccessHost(listenHost);
 
   return {
     url: buildPrototypeAccessUrl(listenHost, listenPort, accessToken),
     baseUrl,
     token: accessToken,
-    host: listenHost,
+    host: accessHost,
     port: listenPort,
     getSnapshot: buildSnapshot,
     getState: () => currentState,

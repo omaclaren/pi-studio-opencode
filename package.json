@@ -1,6 +1,6 @@
 {
   "name": "pi-studio-opencode",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "OpenCode plug-in adaptation of pi-studio with a browser-based two-pane Studio workspace",
   "type": "module",
   "license": "MIT",
@@ -18,6 +18,14 @@
     ".": {
       "import": "./dist/opencode-plugin.js",
       "types": "./dist/opencode-plugin.d.ts"
+    },
+    "./server": {
+      "import": "./dist/opencode-plugin.js",
+      "types": "./dist/opencode-plugin.d.ts"
+    },
+    "./tui": {
+      "import": "./dist/opencode-plugin-tui.js",
+      "types": "./dist/opencode-plugin-tui.d.ts"
     },
     "./launcher": {
       "import": "./dist/launcher.js",

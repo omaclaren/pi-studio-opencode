@@ -14,8 +14,8 @@ The main goal is a good OpenCode version of Studio rather than full feature pari
 
 ## Features
 
-- Launch Studio from an active OpenCode session with `/studio`
-- Attach Studio to the same session you are already using
+- Launch Studio with `/studio`
+- Attach Studio to the current OpenCode session, or create one if needed
 - Two-pane editor + response/preview workspace
 - Run, queue steering, stop, and browse response history
 - Raw response, rendered response preview, and editor preview
@@ -31,66 +31,74 @@ The main goal is a good OpenCode version of Studio rather than full feature pari
 
 ## Install
 
-Run the package's installer CLI with one of:
+Recommended:
 
 ```bash
-bunx pi-studio-opencode@latest install
 npx pi-studio-opencode@latest install
 ```
 
-That updates your OpenCode config to add:
+That configures OpenCode globally, so `/studio` is available in all your OpenCode projects.
 
-- the `pi-studio-opencode@latest` plugin entry
-- the `/studio` command entry
+If you only want `/studio` in the OpenCode project you are currently in:
 
-If you prefer a persistent global CLI instead of a one-shot runner:
+```bash
+npx pi-studio-opencode@latest install --project
+```
+
+If you use Bun instead of npm:
+
+```bash
+bunx pi-studio-opencode@latest install
+bunx pi-studio-opencode@latest install --project
+```
+
+Optional: if you want `pi-studio-opencode` available as a normal shell command:
 
 ```bash
 npm install -g pi-studio-opencode
 pi-studio-opencode install
 ```
 
-For a project-local install instead of a user-wide one:
-
-```bash
-bunx pi-studio-opencode@latest install --project
-npx pi-studio-opencode@latest install --project
-```
-
-Then restart OpenCode and run:
+Then fully restart OpenCode and run:
 
 ```text
 /studio
 ```
 
-> `bunx` / `npx` are recommended because `pi-studio-opencode` is primarily used as a CLI installer here. A plain `npm install` by itself only downloads the package; it does not update your OpenCode config or register the `/studio` command.
+The install step updates both OpenCode config files for you:
+
+- `opencode.json` for the server plugin
+- `tui.json` for the TUI plugin
 
 ## Manual config
 
 If you prefer to edit config yourself, add this to either:
 
-- `.opencode/opencode.jsonc`
-- `~/.config/opencode/opencode.json`
-- `~/.config/opencode/opencode.jsonc`
+- `.opencode/opencode.jsonc` and `.opencode/tui.json`
+- `~/.config/opencode/opencode.json` and `~/.config/opencode/tui.json`
+- `~/.config/opencode/opencode.jsonc` and `~/.config/opencode/tui.jsonc`
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["pi-studio-opencode@latest"],
-  "command": {
-    "studio": {
-      "template": "Open π Studio for this active opencode session.",
-      "description": "Open π Studio attached to the current opencode session"
-    }
-  }
+  "plugin": ["pi-studio-opencode@latest"]
+}
+```
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["pi-studio-opencode@latest"]
 }
 ```
 
 ## Notes
 
-- `/studio` opens a browser-based Studio linked to the current OpenCode session.
-- If `/studio` gets sent to the model as ordinary text, the plug-in probably did not load. Rebuild or reinstall the package, then fully restart OpenCode.
-- If you use `--no-open`, open the full tokenized URL shown by Studio, not just the bare port root.
+- `/studio` opens a browser-based Studio attached to the current OpenCode session, or creates one if needed.
+- `/studio` is a built-in slash action provided by the TUI plug-in; it will not appear unless the plug-in is also present in `tui.json`.
+- If `/studio` gets sent to the model as ordinary text, the plug-in probably did not load, or you still have a stale `command.studio` entry from an older install. Rebuild or reinstall the package, remove that legacy command entry if needed, then fully restart OpenCode.
+- After updating the plug-in, open a fresh Studio browser tab rather than reusing an older one.
+- Advanced launcher flags are best used with the standalone CLI or `PI_STUDIO_OPENCODE_LAUNCH_ARGS`.
 - `--base-url`, `--session`, and `--directory` are taken from the active OpenCode session during `/studio`.
 - The Studio UI is external to OpenCode; it is not an embedded pane.
 - Preview and PDF quality depend on local tooling:
@@ -116,4 +124,3 @@ To attach manually to an existing OpenCode server/session:
 ```bash
 pi-studio-opencode --base-url "http://127.0.0.1:4096" --session "<session-id>" --directory "/path/to/project"
 ```
-

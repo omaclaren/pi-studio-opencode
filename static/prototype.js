@@ -53,6 +53,8 @@ const MATHJAX_UNAVAILABLE_MESSAGE = "Math fallback unavailable. Some unsupported
 const MATHJAX_RENDER_FAIL_MESSAGE = "Math fallback could not render some unsupported equations.";
 const PDF_PREVIEW_UNAVAILABLE_MESSAGE = "PDF figure preview unavailable. Inline PDF rendering is not supported in this browser environment.";
 const PDF_PREVIEW_RENDER_FAIL_MESSAGE = "PDF figure preview could not be rendered.";
+const SNAPSHOT_REQUEST_TIMEOUT_MS = 4000;
+const ACTION_REQUEST_TIMEOUT_MS = 8000;
 let mathJaxPromise = null;
 let pdfJsPromise = null;
 
@@ -184,6 +186,27 @@ function buildAuthenticatedHeaders(init = undefined) {
     headers.set("X-PI-STUDIO-TOKEN", STUDIO_ACCESS_TOKEN);
   }
   return headers;
+}
+
+async function fetchWithTimeout(resource, init = {}, timeoutMs = ACTION_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(new Error("Request timed out")), timeoutMs);
+  try {
+    return await fetch(resource, {
+      cache: "no-store",
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && error.name === "AbortError") {
+      throw new Error(timeoutMs <= SNAPSHOT_REQUEST_TIMEOUT_MS
+        ? "Snapshot request timed out. Retrying..."
+        : "Studio request timed out. The attached terminal may still continue; Studio will keep polling.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function normalizedText(value) {
@@ -2705,9 +2728,9 @@ function render() {
 }
 
 async function fetchSnapshot() {
-  const response = await fetch(buildAuthenticatedPath("/api/snapshot"), {
+  const response = await fetchWithTimeout(buildAuthenticatedPath("/api/snapshot"), {
     headers: buildAuthenticatedHeaders(),
-  });
+  }, SNAPSHOT_REQUEST_TIMEOUT_MS);
   if (!response.ok) {
     const message = response.status === 403
       ? "Studio access expired. Re-run /studio."
@@ -2722,11 +2745,11 @@ async function postJson(path, payload = {}) {
   state.busy = true;
   render();
   try {
-    const response = await fetch(buildAuthenticatedPath(path), {
+    const response = await fetchWithTimeout(buildAuthenticatedPath(path), {
       method: "POST",
       headers: buildAuthenticatedHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
-    });
+    }, ACTION_REQUEST_TIMEOUT_MS);
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.error || `Request failed with ${response.status}`);

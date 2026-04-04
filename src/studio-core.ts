@@ -46,6 +46,12 @@ export type StudioCoreResponsePayload = {
   completedAt?: number;
 };
 
+export type StudioCoreObservedPromptInput = {
+  promptText?: string | null;
+  userMessageId?: string | null;
+  submittedAt?: number;
+};
+
 export class StudioCore {
   private state: StudioHostState;
   private activeChain: StudioCoreChain | null = null;
@@ -236,6 +242,42 @@ export class StudioCore {
     this.history.push(historyItem);
     this.refreshDerivedState();
     return historyItem;
+  }
+
+  observeExternalPrompt(input: StudioCoreObservedPromptInput): StudioHostHistoryItem | null {
+    this.assertReady();
+    if (this.activeChain || this.activeSubmission || this.queuedSteers.length > 0) {
+      return null;
+    }
+
+    const promptText = typeof input.promptText === "string" ? input.promptText.trim() : "";
+    if (!promptText) {
+      return null;
+    }
+
+    const chain: StudioCoreChain = {
+      chainId: `chain_${randomUUID()}`,
+      chainIndex: this.nextChainIndexValue++,
+      basePrompt: promptText,
+      steeringPrompts: [],
+    };
+    this.activeChain = chain;
+    this.activeSubmission = {
+      localPromptId: `prompt_${randomUUID()}`,
+      chainId: chain.chainId,
+      chainIndex: chain.chainIndex,
+      promptMode: "response",
+      promptSteeringCount: 0,
+      promptText,
+      effectivePrompt: promptText,
+      queuedWhileBusy: false,
+      submittedAt: typeof input.submittedAt === "number" && Number.isFinite(input.submittedAt)
+        ? input.submittedAt
+        : Date.now(),
+      userMessageId: typeof input.userMessageId === "string" ? input.userMessageId : undefined,
+    };
+    this.refreshDerivedState();
+    return this.snapshotSubmission(this.activeSubmission);
   }
 
   markStopRequested(options?: { clearQueuedSteers?: boolean; backendStatus?: string | null }): void {

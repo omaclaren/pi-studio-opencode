@@ -146,3 +146,31 @@ test("StudioCore can record externally observed terminal responses", () => {
   assert.equal(core.getHistory().length, 1);
   assert.equal(core.getState().runState, "idle");
 });
+
+test("StudioCore can surface an active externally observed terminal prompt before idle", () => {
+  const core = new StudioCore({ backend: "test" });
+
+  const observed = core.observeExternalPrompt({
+    promptText: "typed in terminal",
+    userMessageId: "user-ext-1",
+    submittedAt: 400,
+  });
+
+  assert.ok(observed);
+  assert.equal(observed?.promptMode, "response");
+  assert.equal(observed?.promptText, "typed in terminal");
+  assert.equal(observed?.userMessageId, "user-ext-1");
+  assert.equal(core.getState().runState, "running");
+  assert.equal(core.getState().activePromptId, observed?.localPromptId ?? null);
+
+  const completed = core.completeActiveResponse({
+    responseMessageId: "assistant-ext-1",
+    responseText: "streamed response",
+    completedAt: 450,
+  });
+  assert.equal(completed?.responseText, "streamed response");
+
+  core.noteBackendIdle();
+  assert.equal(core.getState().runState, "idle");
+  assert.equal(core.getHistory().length, 1);
+});

@@ -1,18 +1,16 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Config, Event, OpencodeClient, Part } from "@opencode-ai/sdk";
+import type { Config } from "@opencode-ai/sdk";
+import type { OpencodeClient as TuiOpencodeClient } from "@opencode-ai/sdk/v2";
 import type { Plugin } from "@opencode-ai/plugin";
-import { createPluginBackedOpencodeStudioHost, type PluginBackedOpencodeStudioHost } from "./host-opencode-plugin.js";
 import { openBrowserUrl } from "./open-browser.js";
 import {
   startPrototypeServer,
-  type PrototypeModelCatalogEntry,
   type PrototypeServerInstance,
   type PrototypeServerOptions,
 } from "./prototype-server.js";
 
 const STUDIO_COMMAND_NAME = "studio";
-const CANCEL_LAUNCH_MESSAGE = "PI_STUDIO_OPENCODE_COMMAND_HANDLED";
 const COMMAND_DESCRIPTION = "Open π Studio attached to the current opencode session";
 const COMMAND_TEMPLATE = "Open π Studio for this active opencode session.";
 const FORBIDDEN_LAUNCHER_FLAGS = new Set(["--base-url", "--session", "--directory"]);
@@ -21,11 +19,56 @@ type PluginStudioLaunchOptions = Pick<PrototypeServerOptions, "host" | "port" | 
   openBrowser: boolean;
 };
 
-type ActiveStudioBridge = {
+type StudioToastVariant = "info" | "success" | "warning" | "error";
+
+type StudioTuiCommand = {
+  title: string;
+  value: string;
+  description?: string;
+  category?: string;
+  enabled?: boolean;
+  slash?: {
+    name: string;
+    aliases?: string[];
+  };
+  onSelect?: () => void | Promise<void>;
+};
+
+type StudioTuiApi = {
+  command: {
+    register: (cb: () => StudioTuiCommand[]) => unknown;
+  };
+  route: {
+    current: {
+      name: string;
+      params?: Record<string, unknown>;
+    };
+    navigate: (name: string, params?: Record<string, unknown>) => void;
+  };
+  ui: {
+    toast: (input: {
+      title?: string;
+      message: string;
+      variant: StudioToastVariant;
+      duration?: number;
+    }) => void;
+  };
+  state: {
+    path: {
+      directory: string;
+    };
+  };
+  client: TuiOpencodeClient;
+  lifecycle: {
+    onDispose: (fn: () => void | Promise<void>) => unknown;
+  };
+};
+
+type ActiveStudioSurface = {
   sessionId: string;
   directory: string;
+  baseUrl: string;
   launchOptions: PluginStudioLaunchOptions;
-  host: PluginBackedOpencodeStudioHost;
   instance: PrototypeServerInstance;
 };
 
@@ -121,62 +164,6 @@ function appendLauncherLog(line: string): void {
   appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`, "utf8");
 }
 
-function parseFiniteContextLimit(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : undefined;
-}
-
-async function readPrototypeModelCatalog(client: OpencodeClient, directory: string): Promise<PrototypeModelCatalogEntry[]> {
-  try {
-    const response = await client.config.providers({
-      query: { directory },
-      throwOnError: true,
-    });
-    const providers = Array.isArray(response.data?.providers) ? response.data.providers : [];
-    const catalog: PrototypeModelCatalogEntry[] = [];
-
-    for (const provider of providers) {
-      const providerID = typeof provider?.id === "string" ? provider.id.trim() : "";
-      if (!providerID) continue;
-
-      const models = provider?.models && typeof provider.models === "object"
-        ? Object.entries(provider.models)
-        : [];
-
-      for (const [modelID, model] of models) {
-        const normalizedModelID = typeof modelID === "string" ? modelID.trim() : "";
-        if (!normalizedModelID) continue;
-
-        catalog.push({
-          providerID,
-          modelID: normalizedModelID,
-          contextLimit: parseFiniteContextLimit((model as { limit?: { context?: unknown } }).limit?.context),
-        });
-      }
-    }
-
-    return catalog;
-  } catch (error) {
-    appendLauncherLog(`model catalog load failed error=${error instanceof Error ? error.message : String(error)}`);
-    return [];
-  }
-}
-
-function ensureStudioCommand(config: Config): void {
-  config.command ??= {};
-  if (!config.command[STUDIO_COMMAND_NAME]) {
-    config.command[STUDIO_COMMAND_NAME] = {
-      template: COMMAND_TEMPLATE,
-      description: COMMAND_DESCRIPTION,
-    };
-  }
-}
-
-function clearCommandParts(parts: Part[]): void {
-  parts.splice(0, parts.length);
-}
-
 function parsePluginStudioLaunchArgs(args: string[]): PluginStudioLaunchOptions {
   const options: PluginStudioLaunchOptions = {
     host: "127.0.0.1",
@@ -225,162 +212,214 @@ function sameLaunchOptions(a: PluginStudioLaunchOptions, b: PluginStudioLaunchOp
     && (a.title ?? "") === (b.title ?? "");
 }
 
-class StudioBridgeManager {
-  private readonly bridges = new Map<string, ActiveStudioBridge>();
-  private cleanupInstalled = false;
+function isLegacyStudioCommandEntry(entry: unknown): boolean {
+  if (!entry || typeof entry !== "object") return false;
+  const template = typeof (entry as { template?: unknown }).template === "string"
+    ? (entry as { template: string }).template.trim()
+    : "";
+  const description = typeof (entry as { description?: unknown }).description === "string"
+    ? (entry as { description: string }).description.trim()
+    : "";
 
-  constructor(private readonly ctx: Parameters<Plugin>[0]) {}
+  if (template !== COMMAND_TEMPLATE) return false;
+  return !description || description === COMMAND_DESCRIPTION;
+}
 
-  private installCleanup(): void {
-    if (this.cleanupInstalled) return;
-    this.cleanupInstalled = true;
-
-    process.once("exit", () => {
-      void this.stopAll();
-    });
+function removeLegacyStudioCommand(config: Config): void {
+  const commands = config.command;
+  if (!commands || typeof commands !== "object") return;
+  if (!isLegacyStudioCommandEntry(commands[STUDIO_COMMAND_NAME])) return;
+  delete commands[STUDIO_COMMAND_NAME];
+  if (Object.keys(commands).length === 0) {
+    delete config.command;
   }
+}
+
+function readTuiSessionId(api: StudioTuiApi): string | null {
+  if (api.route.current.name !== "session") return null;
+  const sessionId = api.route.current.params?.sessionID;
+  return typeof sessionId === "string" && sessionId.trim() ? sessionId : null;
+}
+
+async function ensureTuiSessionId(api: StudioTuiApi): Promise<string> {
+  const existing = readTuiSessionId(api);
+  if (existing) return existing;
+
+  const sessionClient = api.client.session;
+  if (!sessionClient?.create) {
+    throw new Error("Could not create an OpenCode session for /studio.");
+  }
+
+  const created = await sessionClient.create({
+    directory: api.state.path.directory,
+  }, {
+    throwOnError: true,
+  });
+  const sessionId = created.data?.id;
+  if (typeof sessionId !== "string" || !sessionId.trim()) {
+    throw new Error("OpenCode did not return a session id for /studio.");
+  }
+
+  api.route.navigate("session", { sessionID: sessionId });
+  return sessionId;
+}
+
+function readTuiBaseUrl(api: StudioTuiApi): string | null {
+  const baseUrl = (api.client as unknown as {
+    client?: {
+      getConfig?: () => {
+        baseUrl?: string;
+      };
+    };
+  }).client?.getConfig?.().baseUrl;
+  return typeof baseUrl === "string" && baseUrl.trim() ? baseUrl.trim() : null;
+}
+
+class StudioSurfaceManager {
+  private readonly surfaces = new Map<string, ActiveStudioSurface>();
 
   async openStudio(input: {
     sessionId: string;
     directory: string;
+    baseUrl: string;
+    clientV2: TuiOpencodeClient;
     launchOptions: PluginStudioLaunchOptions;
+    showToast: (message: string, variant: StudioToastVariant) => void;
   }): Promise<PrototypeServerInstance> {
-    this.installCleanup();
-
-    const existing = this.bridges.get(input.sessionId);
-    if (existing && existing.directory === input.directory && sameLaunchOptions(existing.launchOptions, input.launchOptions)) {
+    const existing = this.surfaces.get(input.sessionId);
+    if (
+      existing
+      && existing.directory === input.directory
+      && existing.baseUrl === input.baseUrl
+      && sameLaunchOptions(existing.launchOptions, input.launchOptions)
+    ) {
       appendLauncherLog(`reuse session=${input.sessionId} url=${existing.instance.url}`);
-      await this.maybeOpenBrowser(existing.instance.url, input.launchOptions.openBrowser);
+      await this.maybeOpenBrowser(existing.instance.url, input.launchOptions.openBrowser, input.showToast);
       return existing.instance;
     }
 
     if (existing) {
       await existing.instance.stop();
-      this.bridges.delete(input.sessionId);
+      this.surfaces.delete(input.sessionId);
     }
 
-    const modelCatalog = await readPrototypeModelCatalog(this.ctx.client, input.directory);
-
-    let hostRef: PluginBackedOpencodeStudioHost | null = null;
     const instance = await startPrototypeServer({
       directory: input.directory,
+      baseUrl: input.baseUrl,
+      clientV2: input.clientV2,
       sessionId: input.sessionId,
       title: input.launchOptions.title,
       host: input.launchOptions.host,
       port: input.launchOptions.port,
       consoleLogs: false,
-      modelCatalog,
-    }, async ({ options, eventLogger, telemetryListener }) => {
-      hostRef = await createPluginBackedOpencodeStudioHost({
-        client: this.ctx.client,
-        directory: options.directory,
-        sessionId: options.sessionId,
-        title: options.title,
-        eventLogger,
-        telemetryListener,
-      });
-      return hostRef;
     });
 
-    if (!hostRef) {
-      await instance.stop();
-      throw new Error("Failed to initialize plugin-backed Studio host.");
-    }
-
-    const bridge: ActiveStudioBridge = {
+    this.surfaces.set(input.sessionId, {
       sessionId: input.sessionId,
       directory: input.directory,
+      baseUrl: input.baseUrl,
       launchOptions: { ...input.launchOptions },
-      host: hostRef,
       instance,
-    };
-    this.bridges.set(input.sessionId, bridge);
+    });
 
-    appendLauncherLog(`bridge ready session=${input.sessionId} url=${instance.url}`);
-    await this.maybeOpenBrowser(instance.url, input.launchOptions.openBrowser);
+    appendLauncherLog(`surface ready session=${input.sessionId} url=${instance.url}`);
+    await this.maybeOpenBrowser(instance.url, input.launchOptions.openBrowser, input.showToast);
     return instance;
   }
 
-  async handleEvent(event: Event): Promise<void> {
-    const active = [...this.bridges.values()];
-    if (active.length === 0) return;
-    await Promise.allSettled(active.map(async (bridge) => {
-      await bridge.host.ingestEvent(event);
+  async stopAll(): Promise<void> {
+    const active = [...this.surfaces.values()];
+    this.surfaces.clear();
+    await Promise.allSettled(active.map(async (surface) => {
+      await surface.instance.stop();
     }));
   }
 
-  private async maybeOpenBrowser(url: string, openBrowser: boolean): Promise<void> {
+  private async maybeOpenBrowser(
+    url: string,
+    openBrowser: boolean,
+    showToast: (message: string, variant: StudioToastVariant) => void,
+  ): Promise<void> {
     if (!openBrowser) {
       appendLauncherLog(`browser skipped url=${url}`);
-      await this.showToast(`π Studio ready: ${url}`, "info");
+      showToast(`π Studio ready: ${url}`, "info");
       return;
     }
 
     try {
       await openBrowserUrl(url);
       appendLauncherLog(`browser opened url=${url}`);
-      await this.showToast("Opened π Studio in your browser.", "success");
+      showToast("Opened π Studio in your browser.", "success");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       appendLauncherLog(`browser open failed url=${url} error=${message}`);
-      await this.showToast(`π Studio ready: ${url}`, "warning");
+      showToast(`π Studio ready: ${url}`, "warning");
     }
-  }
-
-  private async showToast(message: string, variant: "info" | "success" | "warning" | "error"): Promise<void> {
-    try {
-      await this.ctx.client.tui.showToast({
-        query: { directory: this.ctx.directory },
-        body: {
-          title: "π Studio",
-          message,
-          variant,
-          duration: 4500,
-        },
-        throwOnError: true,
-      });
-    } catch {
-      // ignore toast failures; the browser URL is still logged if logging is enabled
-    }
-  }
-
-  private async stopAll(): Promise<void> {
-    const active = [...this.bridges.values()];
-    this.bridges.clear();
-    await Promise.allSettled(active.map(async (bridge) => {
-      await bridge.instance.stop();
-    }));
   }
 }
 
-export const PiStudioOpencodePlugin: Plugin = async (ctx) => {
-  const bridgeManager = new StudioBridgeManager(ctx);
-
+export const PiStudioOpencodePlugin: Plugin = async () => {
   return {
     config: async (config) => {
-      ensureStudioCommand(config);
-    },
-    event: async ({ event }) => {
-      await bridgeManager.handleEvent(event);
-    },
-    "command.execute.before": async (input, output) => {
-      if (input.command !== STUDIO_COMMAND_NAME) {
-        return;
-      }
-
-      clearCommandParts(output.parts);
-      const launchOptions = parsePluginStudioLaunchArgs([
-        ...getExtraLauncherArgsFromEnvironment(),
-        ...sanitizeLauncherArgs(tokenizeCommandArguments(input.arguments)),
-      ]);
-      await bridgeManager.openStudio({
-        sessionId: input.sessionID,
-        directory: ctx.directory,
-        launchOptions,
-      });
-      throw new Error(CANCEL_LAUNCH_MESSAGE);
+      removeLegacyStudioCommand(config);
     },
   };
 };
 
-export default PiStudioOpencodePlugin;
+export async function PiStudioOpencodeTuiPlugin(api: StudioTuiApi): Promise<void> {
+  const surfaceManager = new StudioSurfaceManager();
+  const showToast = (message: string, variant: StudioToastVariant): void => {
+    api.ui.toast({
+      title: "π Studio",
+      message,
+      variant,
+      duration: 4500,
+    });
+  };
+
+  api.lifecycle.onDispose(() => surfaceManager.stopAll());
+
+  api.command.register(() => [
+    {
+      title: "Open π Studio",
+      value: "pi-studio-opencode.open",
+      description: COMMAND_DESCRIPTION,
+      category: "Plugin",
+      slash: {
+        name: STUDIO_COMMAND_NAME,
+      },
+      onSelect: async () => {
+        const baseUrl = readTuiBaseUrl(api);
+        if (!baseUrl) {
+          showToast("Could not determine the OpenCode server URL for /studio.", "error");
+          return;
+        }
+
+        let sessionId = readTuiSessionId(api) ?? "unknown";
+        try {
+          sessionId = await ensureTuiSessionId(api);
+          const launchOptions = parsePluginStudioLaunchArgs(getExtraLauncherArgsFromEnvironment());
+          await surfaceManager.openStudio({
+            sessionId,
+            directory: api.state.path.directory,
+            baseUrl,
+            clientV2: api.client,
+            launchOptions,
+            showToast,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          appendLauncherLog(`tui launch failed session=${sessionId} error=${message}`);
+          showToast(message, "error");
+        }
+      },
+    },
+  ]);
+}
+
+export const PiStudioOpencodePluginModule = {
+  id: "pi-studio-opencode",
+  server: PiStudioOpencodePlugin,
+};
+
+export default PiStudioOpencodePluginModule;
